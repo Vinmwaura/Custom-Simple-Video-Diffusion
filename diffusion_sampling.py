@@ -182,8 +182,6 @@ def cold_diffusion_sampling(
                 x_t_combined,
                 t,
                 labels_tensor)
-            
-            x0_recon_approx_ = x0_recon_approx[:, :, 1:, :, :]
 
             if count < len(steps) - 1:
                 # t-1: Time Step
@@ -216,4 +214,79 @@ def cold_diffusion_sampling(
                     suffix='Complete',
                     length=50,
                     log=log)
+    return x0_recon_approx
+
+def frame_interpolation_sampling(
+        diffusion_net,
+        noise_degradation,
+        noise,
+        first_frame,
+        last_frame,
+        min_noise=1,
+        max_noise=1_000,
+        labels_tensor=None,
+        skip_step_size=10,
+        device="cpu",
+        log=print):
+    diffusion_net.eval()
+
+    steps = list(range(max_noise, min_noise - 1, -skip_step_size))
+
+    # Includes minimum timestep into the steps if not included.
+    if not min_noise in steps:
+        steps = steps + [min_noise]
+
+    first_frame = first_frame.to(device)
+    last_frame = last_frame.to(device)
+    noise = noise.to(device)
+
+    x_t_frames = 1 * noise
+
+    with torch.no_grad():
+        for count in range(len(steps)):
+            # t: Time Step
+            t = torch.tensor([steps[count]], device=device)
+
+            # Reconstruction: (x0_hat).
+            x_t_combined = torch.cat((first_frame, x_t_frames, last_frame), dim=2)
+            
+            x0_recon_approx = diffusion_net(
+                x_t_combined,
+                t,
+                labels_tensor)
+            
+            x0_recon_approx_ = x0_recon_approx[:, :, 1, :, :].unsqueeze(2)
+
+            if count < len(steps) - 1:
+                # t-1: Time Step
+                tm1 = torch.tensor([steps[count + 1]], device=device)
+
+                # D(x0_hat, t).
+                # Noise degraded image (x_t).
+                # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
+                x_t_frames_hat = noise_degradation(
+                    img=x0_recon_approx_,
+                    steps=t,
+                    eps=noise)
+
+                # D(x0_hat, t-1).
+                # Noise degraded image (x_t).
+                # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
+                x_tm1_frames_hat = noise_degradation(
+                    img=x0_recon_approx_,
+                    steps=tm1,
+                    eps=noise)
+                
+                # q(x_t-1 | x_t, x_0).
+                # Improved sampling from Cold Diffusion paper.
+                x_t_frames = x_t_frames - x_t_frames_hat + x_tm1_frames_hat
+
+                printProgressBar(
+                    iteration=max_noise - steps[count],
+                    total=max_noise - min_noise,
+                    prefix='Iterations:',
+                    suffix='Complete',
+                    length=50,
+                    log=log)
+
     return x0_recon_approx

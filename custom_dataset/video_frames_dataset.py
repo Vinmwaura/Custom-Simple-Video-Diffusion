@@ -27,7 +27,6 @@ class VideoFramesDataset(Dataset):
         self.frames_skipped = frames_skipped
 
         self.frame_counts = len(img_paths)
-        print(self.frame_counts)
 
         self.frame_dict = {}
         for img_path in img_paths:
