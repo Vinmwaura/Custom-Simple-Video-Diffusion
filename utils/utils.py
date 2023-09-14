@@ -1,5 +1,9 @@
 import os
 
+import cv2
+import numpy as np
+from PIL import Image
+
 import torch
 import torchvision
 
@@ -35,6 +39,53 @@ def printProgressBar (
     if iteration == total: 
         log()
 
+def make_gif(videos, global_steps=None, dest_path=None, log=print):
+    for video_index, video in enumerate(videos):
+        video_frames = video.permute(1, 0, 2, 3)
+
+        all_frames = []
+        for frame in video_frames:
+            # Convert Tensor to numpy array.
+            image_np = frame.permute(1, 2, 0).cpu().numpy()
+
+            # Clip values to be between -1 and 1 to avoid artefacts.
+            image_np = np.clip(image_np, -1, 1)
+
+            # Convert BGR to RGB
+            image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+
+            # Convert to appropriate format.
+            image_pil_range = np.uint8(((image_rgb + 1) / 2) * 255)
+
+            # Convert Numpy array to PIL Image.
+            pil_image = torchvision.transforms.ToPILImage()(image_pil_range)
+
+            all_frames.append(pil_image)
+
+        if dest_path is None:
+            # current_dir = os.path.dirname(os.path.abspath(__file__))
+            dir_path = os.path.join(".", "plots")
+        else:
+            dir_path = os.path.join(dest_path, "plots")
+
+        os.makedirs(dir_path, exist_ok=True)
+        frame_one = all_frames[0]
+        try:
+            if global_steps is not None and isinstance(global_steps, int):
+                path = os.path.join(dir_path, f"video_{video_index}_{global_steps:,}.gif")
+            else:
+                path = os.path.join(dir_path, f"video_{video_index}.gif")
+
+            frame_one.save(
+                path,
+                format="GIF",
+                append_images=all_frames,
+                save_all=True,
+                duration=100,
+                loop=0)
+            log(f"Saving gif: {path}")
+        except Exception as e:
+            log(f"An error occured while creating gif: {e}")
 
 def plot_sampled_images(sampled_imgs, file_name, dest_path=None, log=print, n_row=5):
     # Convert from BGR to RGB,
