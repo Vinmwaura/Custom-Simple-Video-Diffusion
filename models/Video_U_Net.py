@@ -10,7 +10,6 @@ U-Net Architecture.
 class Video_U_Net(nn.Module):
     def __init__(
             self,
-            interpolation=False,
             num_resnet_blocks=5,
             in_channel=3,
             out_channel=3,
@@ -26,8 +25,6 @@ class Video_U_Net(nn.Module):
             image_recon=False):
         super().__init__()
 
-        self.interpolation = interpolation
-        
         # Checks to ensure params are valid to prevent issues.
         if not isinstance(num_layers, int) or not isinstance(attn_layers, list):
             raise TypeError("Invalid type!")
@@ -115,25 +112,6 @@ class Video_U_Net(nn.Module):
 
         # Output Section.
         out_layers_list = []
-        if self.interpolation:
-            out_layers_list.append(
-                nn.Sequential(
-                    nn.Conv3d(
-                        channel_layers[0],
-                        channel_layers[0],
-                        kernel_size=(2, 1, 1),
-                        stride=(1, 1, 1),
-                        padding=(0, 0, 0)),
-                    Swish(),
-                    nn.Conv3d(
-                        channel_layers[0],
-                        channel_layers[0],
-                        kernel_size=(2, 1, 1),
-                        stride=(1, 1, 1),
-                        padding=(0, 0, 0)),
-                    Swish()
-                )
-            )
         out_layers_list.append(
             UNet_ConvBlock(
                 in_channels=channel_layers[0],
