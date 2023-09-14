@@ -20,16 +20,14 @@ from degraders import *
 
 from utils.utils import *
 
-from diffusion_sampling import (
-    ddpm_sampling,
-    ddim_sampling)
+from diffusion_sampling import frame_interpolation_sampling
 
 def main():
-    project_name = "Base-Video-Diffusion"
+    project_name = "Interpolation-Base-Video-Diffusion"
 
     parser = argparse.ArgumentParser(
-        description="Train Base Video Diffusion models.")
-    
+        description="Train Base Video Interpolation Diffusion models.")
+
     parser.add_argument(
         "-c",
         "--config-path",
@@ -97,13 +95,6 @@ def main():
     else:
         raise ValueError("Invalid noise scheduler type.")
 
-    if config_dict["diffusion_alg"] == "DDIM":
-        diffusion_alg = DiffusionAlg.DDIM
-    elif config_dict["diffusion_alg"] == "DDPM":
-        diffusion_alg = DiffusionAlg.DDPM
-    else:
-        raise ValueError("Invalid diffusion algorithm type.")
-
     min_noise_step = config_dict["min_noise_step"]  # t_1
     max_noise_step = config_dict["max_noise_step"]  # T
     max_actual_noise_step = config_dict["max_actual_noise_step"]  # Max timestep used in training step (For ensemble models training).
@@ -147,6 +138,25 @@ def main():
         num_workers=4,
         shuffle=True)
     
+    plot_dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=plot_img_count,
+        num_workers=1,
+        shuffle=True)
+    
+    plot_video_frames = next(iter(plot_dataloader))
+    plot_N, plot_C, plot_D, plot_H, plot_W = plot_video_frames.shape
+    plot_video_frames_ = plot_video_frames.permute(0, 2, 1, 3, 4).reshape(plot_N * plot_D, plot_C, plot_H, plot_W)
+
+    plot_sampled_images(
+        sampled_imgs=plot_video_frames_,  # t = 1
+        file_name=f"cond_plot",
+        dest_path=out_dir,
+        n_row=3)
+
+    first_cond_video_frames = plot_video_frames[:, :, 0, :, :].unsqueeze(2)
+    last_cond_video_frames = plot_video_frames[:, :, -1, :, :].unsqueeze(2)
+
     # Model Params.
     in_channel = config_dict["in_channel"]
     out_channel = config_dict["out_channel"]
@@ -274,10 +284,11 @@ def main():
 
             video_frames = video_frames.to(device)
 
-            video_N, video_C, video_F, video_H, video_W = video_frames.shape
+            first_frames = video_frames[:, :, 0, :, :].unsqueeze(2)
+            middle_frames = video_frames[:, :, 1, :, :].unsqueeze(2)
+            last_frames = video_frames[:, :, 2, :, :].unsqueeze(2)
 
-            # eps Noise.
-            noise = torch.randn_like(video_frames)
+            video_N, video_C, video_F, video_H, video_W = middle_frames.shape
 
             #################################################
             #             Diffusion Training.               #
@@ -294,27 +305,32 @@ def main():
             # Train model.
             diffusion_net.train()
 
+            # eps Noise.
+            noise = torch.randn_like(middle_frames)
+
+            # Noise degraded image (x_t).
+            # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
+            x_t_middle_frames = noise_degradation(
+                img=middle_frames,
+                steps=rand_noise_step,
+                eps=noise)
+
+            x_t_frames = torch.cat((first_frames, x_t_middle_frames, last_frames), dim=2)
+
             # TODO: Allow for toggling in cases of Hardware that don't support this.
             # Enable autocasting for mixed precision.
             with torch.cuda.amp.autocast():
-                # Noise degraded image (x_t).
-                # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
-                x_t_frames = noise_degradation(
-                    img=video_frames,
-                    steps=rand_noise_step,
-                    eps=noise)
-        
                 # Predicts noise from x_t.
                 # eps_param(sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps, t). 
-                noise_approx = diffusion_net(
+                x0_approx = diffusion_net(
                     x=x_t_frames,
                     t=rand_noise_step)
                 
                 # Simplified Training Objective.
                 # L_simple(param) = E[||eps - eps_param(sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps, t).||^2]
                 diffusion_loss = F.mse_loss(
-                    noise_approx,
-                    noise)
+                    x0_approx,
+                    video_frames)
                 
                 if torch.isnan(diffusion_loss):
                     raise Exception("NaN encountered during training")
@@ -365,38 +381,31 @@ def main():
                     steps=global_steps)
                 
                 # X_T ~ N(0, I).
-                noise = torch.randn((plot_img_count, video_C, video_F, video_H, video_W), device=device)
-                x_t_frames_plot = 1 * noise
+                noise = torch.randn(
+                    (plot_img_count, video_C, video_F, video_H, video_W),
+                    device=device)
 
-                if diffusion_alg == DiffusionAlg.DDPM:
-                    x0_approx = ddpm_sampling(
-                        diffusion_net,
-                        noise_degradation,
-                        x_t_frames_plot,
-                        min_noise_step,
-                        max_actual_noise_step,
-                        cond_img=None,
-                        labels_tensor=None,
-                        device=device,
-                        log=print)
-                elif diffusion_alg == DiffusionAlg.DDIM:
-                    x0_approx = ddim_sampling(
-                        diffusion_net,
-                        noise_degradation,
-                        x_t_frames_plot,
-                        min_noise=min_noise_step,
-                        max_noise=max_actual_noise_step,
-                        cond_img=None,
-                        labels_tensor=None,
-                        ddim_step_size=skip_step,
-                        device=device,
-                        log=print)
-
-                make_gif(
-                    x0_approx,
-                    global_steps=global_steps,
-                    dest_path=out_dir,
+                x0_approx_plot = frame_interpolation_sampling(
+                    diffusion_net,
+                    noise_degradation,
+                    noise,
+                    first_frame=first_cond_video_frames,
+                    last_frame=last_cond_video_frames,
+                    min_noise=min_noise_step,
+                    max_noise=max_actual_noise_step,
+                    labels_tensor=None,
+                    skip_step_size=skip_step,
+                    device=device,
                     log=print)
+                
+                plot_N, plot_C, plot_D, plot_H, plot_W = x0_approx_plot.shape
+                x0_approx_plot_ = x0_approx_plot.permute(0, 2, 1, 3, 4).reshape(plot_N * plot_D, plot_C, plot_H, plot_W)
+
+                plot_sampled_images(
+                    sampled_imgs=x0_approx_plot_,  # t = 1
+                    file_name=f"diffusion_plot_{global_steps}",
+                    dest_path=out_dir,
+                    n_row=3)
 
             temp_avg_diffusion = total_diffusion_loss / training_count
             message = "Cum. Steps: {:,} | Steps: {:,} / {:,} | Diffusion: {:.5f} | LR: {:.9f}".format(
