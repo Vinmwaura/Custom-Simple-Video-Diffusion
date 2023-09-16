@@ -64,9 +64,9 @@ def make_gif(videos, global_steps=None, dest_path=None, log=print):
 
         if dest_path is None:
             # current_dir = os.path.dirname(os.path.abspath(__file__))
-            dir_path = os.path.join(".", "plots")
+            dir_path = os.path.join(".", "GIFS")
         else:
-            dir_path = os.path.join(dest_path, "plots")
+            dir_path = os.path.join(dest_path, "GIFS")
 
         os.makedirs(dir_path, exist_ok=True)
         frame_one = all_frames[0]
