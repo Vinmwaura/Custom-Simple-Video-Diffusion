@@ -207,6 +207,12 @@ def main():
         description="Generate Videos using Diffusion Models.")
 
     parser.add_argument(
+        "--seed",
+        help="Seed value.",
+        default=None,
+        type=int)
+
+    parser.add_argument(
         "--out-dir",
         help="File path to save output.",
         default=None,
@@ -227,6 +233,11 @@ def main():
         default="cpu")
     
     args = vars(parser.parse_args())
+
+    # Seed Value.
+    seed_val = args["seed"]
+    if seed_val is not None:
+        torch.manual_seed(seed_val)
     
     # Device to run model on.
     device = args["device"]
