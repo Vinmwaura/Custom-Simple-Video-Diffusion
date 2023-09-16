@@ -135,7 +135,7 @@ def main():
 
     # Dataset and DataLoader.
     # Custom Image Dataset Loader.
-    from custom_dataset.video_frames_dataset import VideoFramesDataset
+    from dataset_loader.video_frames_dataset import VideoFramesDataset
     dataset = VideoFramesDataset(
         dataset_path,
         frame_window=frame_window,

@@ -22,6 +22,9 @@ from utils.utils import *
 
 from diffusion_sampling import frame_interpolation_sampling
 
+# Custom Image Dataset Loader.
+from dataset_loader.video_frames_dataset import VideoFramesDataset
+
 def main():
     project_name = "Interpolation-Base-Video-Diffusion"
 
@@ -125,8 +128,6 @@ def main():
     frame_skipped = config_dict["frame_skipped"]
 
     # Dataset and DataLoader.
-    # Custom Image Dataset Loader.
-    from custom_dataset.video_frames_dataset import VideoFramesDataset
     dataset = VideoFramesDataset(
         dataset_path,
         frame_window=frame_window,
