@@ -1,4 +1,5 @@
 import os
+import csv
 import json
 import pathlib
 import logging
@@ -22,13 +23,19 @@ from utils.utils import *
 
 from diffusion_sampling import (
     ddpm_sampling,
-    ddim_sampling)
+    ddim_sampling,
+    cold_diffusion_sampling)
+
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 def main():
-    project_name = "Base-Video-Diffusion"
+    project_name = "Video-Diffusion"
 
     parser = argparse.ArgumentParser(
-        description="Train Base Video Diffusion models.")
+        description="Train Video Diffusion models.")
     
     parser.add_argument(
         "-c",
@@ -54,20 +61,18 @@ def main():
         json_data = json_file.read()
     config_dict = json.loads(json_data)
 
-    # Training Params.
-    starting_epoch = 0
-    global_steps = 0
-    checkpoint_steps = config_dict["checkpoint_steps"]  # Global steps in between checkpoints
-    lr_steps = config_dict["lr_steps"]  # Global steps in between halving learning rate.
+    # Global steps in between checkpoints
+    checkpoint_steps = config_dict["checkpoint_steps"]
+    
+    # Global steps in between halving learning rate.
+    lr_steps = config_dict["lr_steps"]
     max_epoch = config_dict["max_epoch"]
     plot_img_count = config_dict["plot_img_count"]
-    use_conditional = config_dict["use_conditional"]  # Embed conditional information into the model i.e One-hot encoding.
-    flip_imgs = config_dict["flip_imgs"]  # Toggles augmenting the images by randomly flipping images horizontally.
     
     # Regex to list of images or json containing labelled dataset.
-    dataset_path = config_dict["dataset_path"]
-    if dataset_path is None:
-        raise ValueError("No dataset_path entered.")
+    csv_path = config_dict["csv_path"]
+    if csv_path is None:
+        raise ValueError("No csv path entered.")
     
     # Output Directory for model's checkpoint, logs and sample output.
     out_dir = config_dict["out_dir"]
@@ -101,6 +106,8 @@ def main():
         diffusion_alg = DiffusionAlg.DDIM
     elif config_dict["diffusion_alg"] == "DDPM":
         diffusion_alg = DiffusionAlg.DDPM
+    elif config_dict["diffusion_alg"] == "COLD":
+        diffusion_alg = DiffusionAlg.COLD
     else:
         raise ValueError("Invalid diffusion algorithm type.")
 
@@ -132,12 +139,20 @@ def main():
     # Video Params.
     frame_window = config_dict["frame_window"]
     frame_skipped = config_dict["frame_skipped"]
+    low_res_dim = config_dict["low_res_dim"]
+
+    # Low Resolution Dimension, used for Super Resolution Models.
+    if low_res_dim is not None and not isinstance(low_res_dim, int):
+        raise ValueError("Invalid Image Dimension, must be int.")
+
+    if low_res_dim is not None and low_res_dim <= 2:
+        raise ValueError("Invalid Image Dimension, must be greater than 2.")
 
     # Dataset and DataLoader.
     # Custom Image Dataset Loader.
     from dataset_loader.video_frames_dataset import VideoFramesDataset
     dataset = VideoFramesDataset(
-        dataset_path,
+        csv_path,
         frame_window=frame_window,
         frames_skipped=frame_skipped)
 
@@ -146,10 +161,11 @@ def main():
         batch_size=batch_size,
         num_workers=4,
         shuffle=True)
-    
+
     # Model Params.
     in_channel = config_dict["in_channel"]
     out_channel = config_dict["out_channel"]
+    mapping_channel = config_dict["mapping_channel"]
     num_layers = config_dict["num_layers"]
     num_resnet_block = config_dict["num_resnet_block"]
     attn_layers = config_dict["attn_layers"]
@@ -161,20 +177,92 @@ def main():
     max_channel = config_dict["max_channel"]
     img_recon = config_dict["img_recon"]
 
+    cond_dim_combined = None if cond_dim is None else \
+        cond_dim * (frame_window // (frame_skipped + 1))
+
     # Model.
     diffusion_net = Video_U_Net(
         in_channel=in_channel,
         out_channel=out_channel,
+        mapping_channel=mapping_channel,
         num_layers=num_layers,
         num_resnet_blocks=num_resnet_block,
         attn_layers=attn_layers,
         num_heads=attn_heads,
         dim_per_head=attn_dim_per_head,
         time_dim=time_dim,
-        cond_dim=cond_dim,
+        cond_dim=cond_dim_combined,
         min_channel=min_channel,
         max_channel=max_channel,
         image_recon=img_recon)
+    
+    # Training has Labels or Super Resolution.
+    has_labels = config_dict["has_labels"]
+    super_resolution_training = config_dict["super_resolution_training"]
+
+    plot_frames = None
+    plot_video_labels = None
+    if has_labels or super_resolution_training:
+        plot_dataloader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=plot_img_count,
+            num_workers=1,
+            shuffle=True)
+
+        plot_frames, plot_video_labels = next(iter(plot_dataloader))
+
+    # Conditional Information i.e labels.
+    if has_labels:
+        if cond_dim is None:
+            raise ValueError("Invalid Cond Dim parameter!")
+        
+        if plot_video_labels.shape[1] == 0:
+            raise ValueError("No Labels passed!")
+
+        labels_path = os.path.join(out_dir, "labels.txt")
+
+        with open(csv_path, "r") as f:
+            csv_reader = csv.reader(f)
+            header = next(csv_reader)
+
+        all_rows = [header]
+
+        plot_video_labels_list = plot_video_labels.cpu().tolist()
+        for video_idx, plot_video_label in enumerate(plot_video_labels_list):
+            all_rows.append([f"Video-{video_idx+1:,}"])
+
+            # Group labels per frames in each video.
+            plot_frames_label = list(chunks(plot_video_label, cond_dim))
+            for frame_idx, plot_frame_label in enumerate(plot_frames_label):
+                labels = [f"Frame-{frame_idx + 1:,}"] + plot_frame_label
+                all_rows.append(labels)
+
+        with open(labels_path, "a") as f:
+            wr = csv.writer(f)
+            wr.writerows(all_rows)
+
+    # For Super-Resolution Training, generate GIF of low-res frames and high-res frames.
+    plot_low_res_frames = None
+    if super_resolution_training:
+        if low_res_dim is None:
+            raise ValueError("Invalid Low Resolution Dim parameter!")
+
+        _, _, plot_F, _, _ = plot_frames.shape
+        plot_low_res_frames = F.interpolate(
+            plot_frames,
+            size=(plot_F, low_res_dim, low_res_dim))
+
+        make_gif(
+            plot_frames,
+            global_steps=-1,
+            dest_path=out_dir,
+            log=print)
+
+        make_gif(
+            plot_low_res_frames,
+            global_steps=-2,
+            dest_path=out_dir,
+            log=print)
 
     # Load Pre-trained optimization configs, ignored if no checkpoint is passed.
     load_diffusion_optim = config_dict["load_diffusion_optim"]
@@ -211,8 +299,14 @@ def main():
         if noise_scheduling == NoiseScheduler.LINEAR:
             beta_1 = config_ckpt_dict["beta_1"]
             beta_T = config_ckpt_dict["beta_T"]
+
+        # Training Params.
         starting_epoch = config_ckpt_dict["starting_epoch"]
         global_steps = config_ckpt_dict["global_steps"]
+    else:
+        # Training Params.
+        starting_epoch = 0
+        global_steps = 0
 
     # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
     if noise_scheduling == NoiseScheduler.LINEAR:
@@ -230,18 +324,20 @@ def main():
     logging.info(f"Video Frame Skipped: {frame_skipped:,}")
     logging.info("#" * 100)
     logging.info(f"Train Parameters:")
+    logging.info(f"Has Labels: {has_labels}")
+    logging.info(f"Training Super Resolution: {super_resolution_training}")
     logging.info(f"Max Epoch: {max_epoch:,}")
-    logging.info(f"Dataset Path: {dataset_path}")
+    logging.info(f"Dataset CSV Path: {csv_path}")
     logging.info(f"Output Path: {out_dir}")
     logging.info(f"Checkpoint Steps: {checkpoint_steps}")
     logging.info(f"Batch size: {batch_size:,}")
     logging.info(f"Diffusion LR: {diffusion_optim.param_groups[0]['lr']:.5f}")
-    logging.info(f"Using Conditional Info.: {use_conditional}")
-    logging.info(f"Image Augmentation (Random Horizontal Flip): {flip_imgs}")
+    logging.info(f"Low Resolution Dim (For Super Resolution): {low_res_dim}")
     logging.info("#" * 100)
     logging.info(f"Model Parameters:")
     logging.info(f"In Channel: {in_channel:,}")
     logging.info(f"Out Channel: {out_channel:,}")
+    logging.info(f"Mapping Channel: {mapping_channel}")
     logging.info(f"Num Layers: {num_layers:,}")
     logging.info(f"Num Resnet Block: {num_resnet_block:,}")
     logging.info(f"Attn Layers: {attn_layers}")
@@ -269,12 +365,23 @@ def main():
         # Number of iterations.
         training_count = 0
 
-        for index, video_frames in enumerate(dataloader):
+        for index, (video_frames, frame_labels) in enumerate(dataloader):
             training_count += 1
 
             video_frames = video_frames.to(device)
+            frame_labels = frame_labels.to(device)
 
             video_N, video_C, video_F, video_H, video_W = video_frames.shape
+
+            # For Super Resolution Training.
+            low_res_video_frames = None
+            if super_resolution_training:
+                _, _, low_res_F, _, _ = video_frames.shape
+                low_res_video_frames = F.interpolate(
+                    video_frames,
+                    size=(low_res_F, low_res_dim, low_res_dim))
+
+                low_res_video_frames = low_res_video_frames.to(device)
 
             # eps Noise.
             noise = torch.randn_like(video_frames)
@@ -303,18 +410,32 @@ def main():
                     img=video_frames,
                     steps=rand_noise_step,
                     eps=noise)
-        
-                # Predicts noise from x_t.
-                # eps_param(sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps, t). 
-                noise_approx = diffusion_net(
-                    x=x_t_frames,
-                    t=rand_noise_step)
-                
-                # Simplified Training Objective.
-                # L_simple(param) = E[||eps - eps_param(sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps, t).||^2]
-                diffusion_loss = F.mse_loss(
-                    noise_approx,
-                    noise)
+
+                if diffusion_alg == DiffusionAlg.COLD:
+                    # Predicts image reconstruction.
+                    x0_approx = diffusion_net(
+                        x=x_t_frames,
+                        t=rand_noise_step,
+                        cond=None if frame_labels.shape[1] == 0 else frame_labels,
+                        lr_img=low_res_video_frames)
+
+                    diffusion_loss = F.mse_loss(
+                        x0_approx,
+                        video_frames)
+                else:
+                    # Predicts noise from x_t.
+                    # eps_param(sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps, t). 
+                    noise_approx = diffusion_net(
+                        x=x_t_frames,
+                        t=rand_noise_step,
+                        cond=None if frame_labels.shape[1] == 0 else frame_labels,
+                        lr_img=low_res_video_frames)
+
+                    # Simplified Training Objective.
+                    # L_simple(param) = E[||eps - eps_param(sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps, t).||^2]
+                    diffusion_loss = F.mse_loss(
+                        noise_approx,
+                        noise)
                 
                 if torch.isnan(diffusion_loss):
                     raise Exception("NaN encountered during training")
@@ -365,8 +486,19 @@ def main():
                     steps=global_steps)
                 
                 # X_T ~ N(0, I).
-                noise = torch.randn((plot_img_count, video_C, video_F, video_H, video_W), device=device)
+                noise = torch.randn((
+                    plot_img_count,
+                    video_C,
+                    video_F,
+                    video_H,
+                    video_W), device=device)
                 x_t_frames_plot = 1 * noise
+
+                if super_resolution_training:
+                    plot_low_res_frames = plot_low_res_frames.to(device)
+
+                if has_labels:
+                    plot_video_labels = plot_video_labels.to(device)
 
                 if diffusion_alg == DiffusionAlg.DDPM:
                     x0_approx = ddpm_sampling(
@@ -375,8 +507,8 @@ def main():
                         x_t_frames_plot,
                         min_noise_step,
                         max_actual_noise_step,
-                        cond_img=None,
-                        labels_tensor=None,
+                        lr_img=plot_low_res_frames,
+                        labels_tensor=plot_video_labels,
                         device=device,
                         log=print)
                 elif diffusion_alg == DiffusionAlg.DDIM:
@@ -386,11 +518,26 @@ def main():
                         x_t_frames_plot,
                         min_noise=min_noise_step,
                         max_noise=max_actual_noise_step,
-                        cond_img=None,
-                        labels_tensor=None,
+                        lr_img=plot_low_res_frames,
+                        labels_tensor=plot_video_labels,
                         ddim_step_size=skip_step,
                         device=device,
                         log=print)
+                elif diffusion_alg == DiffusionAlg.COLD:
+                    x0_approx = cold_diffusion_sampling(
+                        diffusion_net,
+                        noise_degradation,
+                        x_t_frames_plot,
+                        noise,
+                        min_noise=min_noise_step,
+                        max_noise=max_actual_noise_step,
+                        lr_img=plot_low_res_frames,
+                        labels_tensor=plot_video_labels,
+                        skip_step_size=10,
+                        device=device,
+                        log=print)
+                else:
+                    raise ValueError("Invalid Diffusion Algorithm!")
 
                 make_gif(
                     x0_approx,

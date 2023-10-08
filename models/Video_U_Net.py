@@ -13,6 +13,7 @@ class Video_U_Net(nn.Module):
             num_resnet_blocks=5,
             in_channel=3,
             out_channel=3,
+            mapping_channel=None,
             time_dim=64,
             cond_dim=None,
             num_layers=5,
@@ -44,8 +45,16 @@ class Video_U_Net(nn.Module):
             channel = channel * 2
             channel_layers.append(
                 max_channel if channel > max_channel else channel)
+            
+        # Mapping Layers for Super Resolution.
+        if mapping_channel is not None:
+            self.mapping_layers = MappingLayer(
+                in_channels=in_channel,
+                hidden_channels=mapping_channel)
+        else:
+            self.mapping_layers = None
 
-        # Conditional Embedding Layer.
+        # Time and Labels Embedding Layer.
         if time_dim is not None:
             # Adds Conditional to Time Embedding if any (Seems to work).
             self.cond_emb = ConditionalEmbedding(time_dim, cond_dim)
@@ -73,6 +82,7 @@ class Video_U_Net(nn.Module):
                     in_channels=channel_layers[layer_count],
                     out_channels=channel_layers[layer_count + 1],
                     emb_dim=time_dim,
+                    mapping_channels=mapping_channel,
                     num_resnet_blocks=num_resnet_blocks,
                     use_attn=layer_count in attn_layers,
                     num_heads=num_heads,
@@ -102,6 +112,7 @@ class Video_U_Net(nn.Module):
                     in_channels=channel_layers[layer_count + 1] * 2,   # Doubles channels
                     out_channels=channel_layers[layer_count],
                     emb_dim=time_dim,
+                    mapping_channels=mapping_channel,
                     num_resnet_blocks=num_resnet_blocks,
                     use_attn=layer_count in attn_layers,
                     num_heads=num_heads,
@@ -135,28 +146,34 @@ class Video_U_Net(nn.Module):
             if name not in own_state:
                 print(f"No Layer found: {name}, skipping")
                 continue
+
             # Skip loading mismatched weights, in cases of weight changes.
             if (own_state[name].shape != param.data.shape):
                 print(f"Skipped: {name}")
                 continue
+
             if isinstance(param, torch.nn.parameter.Parameter):
                 # backwards compatibility for serialized parameters
                 param = param.data
             own_state[name].copy_(param)
 
-    def forward(self, x, t=None, cond=None):
+    def forward(self, x, t=None, cond=None, lr_img=None):
         prev_out = []
 
+        # For Super-Resolution models, idea from StyleGAN's Mapping Layer.
+        x_map = None
+        if lr_img is not None:
+            x_map = self.mapping_layers(lr_img)
+
+        # Time + Cond Embedding.
+        cond_emb = None
         if self.cond_emb is not None:
-            # Time + Cond Embedding.
             cond_emb = self.cond_emb(t, cond)
-        else:
-            cond_emb = None
         
         # Down Section.
         x = self.in_layer(x)
         for down_layer in self.down_layers:
-            x = down_layer(x, cond_emb)
+            x = down_layer(x, cond_emb, x_map)
             prev_out.append(x)
 
         # Middle Section.
@@ -166,40 +183,8 @@ class Video_U_Net(nn.Module):
         for up_layer in self.up_layers:
             prev_in = prev_out.pop()
             x = torch.cat((x, prev_in), dim=1)
-            x = up_layer(x, cond_emb)
+            x = up_layer(x, cond_emb, x_map)
 
         # Returns duffusion output.
         x_out = self.out_layers(x)
         return x_out
-
-if __name__ == "__main__":
-    device = "cuda"
-    with torch.no_grad():
-        img = torch.randn((8, 3, 7, 64, 64), device=device)
-
-        rand_noise_step = torch.randint(
-            low=1,
-            high=1_000,
-            size=(8, ),
-            device="cuda")
-
-        model = Video_U_Net(
-            interpolation=True,
-            num_resnet_blocks=4,
-            in_channel=3,
-            out_channel=3,
-            time_dim=512,
-            cond_dim=None,
-            num_layers=5,
-            attn_layers=[2, 3],
-            num_heads=1,
-            dim_per_head=None,
-            groups=32,
-            min_channel=128,
-            max_channel=512,
-            image_recon=True).to(device)
-        
-        out = model(
-            x=img,
-            t=rand_noise_step)
-    print(out.shape)

@@ -8,14 +8,15 @@ def ddpm_sampling(
         x_t,
         min_noise=1,
         max_noise=1_000,
-        cond_img=None,
+        lr_img=None,
         labels_tensor=None,
         device="cpu",
         log=print):
-    if cond_img is not None:
-        cond_img = cond_img.to(device)
 
     diffusion_net.eval()
+
+    if lr_img is not None:
+        lr_img = lr_img.to(device)
 
     with torch.no_grad():
         for noise_step in range(max_noise, min_noise - 1, -1):
@@ -25,16 +26,12 @@ def ddpm_sampling(
             # Variables needed in computing x_(t-1).
             beta_t, alpha_t, alpha_bar_t = noise_degradation.get_timestep_params(t)
 
-            if cond_img is not None:
-                x_t_combined = torch.cat((cond_img, x_t), dim=1)
-            else:
-                x_t_combined = 1 * x_t
-
             # eps_param(x_t, t).
             noise_approx = diffusion_net(
-                x_t_combined,
-                t,
-                labels_tensor)
+                x=x_t,
+                t=t,
+                cond=labels_tensor,
+                lr_img=lr_img)
 
             img_shape = x_t.shape
 
@@ -69,11 +66,12 @@ def ddim_sampling(
         x_t,
         min_noise=1,
         max_noise=1_000,
-        cond_img=None,
+        lr_img=None,
         labels_tensor=None,
         ddim_step_size=10,
         device="cpu",
         log=print):
+
     diffusion_net.eval()
 
     steps = list(range(max_noise, min_noise - 1, -ddim_step_size))
@@ -85,23 +83,19 @@ def ddim_sampling(
     # 1 - DDPM
     eta = 0.0
     with torch.no_grad():
-        if cond_img is not None:
-            cond_img = cond_img.to(device)
+        if lr_img is not None:
+            lr_img = lr_img.to(device)
 
         for count in range(len(steps)):
             # t: Time Step
             t = torch.tensor([steps[count]], device=device)
 
-            if cond_img is not None:
-                x_t_combined = torch.cat((cond_img, x_t), dim=1)
-            else:
-                x_t_combined = 1 * x_t
-
             # eps_theta(x_t, t).
             noise_approx = diffusion_net(
-                x_t_combined,
-                t,
-                labels_tensor)
+                x=x_t,
+                t=t,
+                cond=labels_tensor,
+                lr_img=lr_img)
 
             # Variables needed in computing x_t.
             _, _, alpha_bar_t = noise_degradation.get_timestep_params(t)
@@ -154,12 +148,15 @@ def cold_diffusion_sampling(
         noise,
         min_noise=1,
         max_noise=1_000,
-        cond_img=None,
+        lr_img=None,
         labels_tensor=None,
         skip_step_size=10,
         device="cpu",
         log=print):
     diffusion_net.eval()
+
+    if lr_img is not None:
+        lr_img = lr_img.to(device)
 
     steps = list(range(max_noise, min_noise - 1, -skip_step_size))
 
@@ -173,15 +170,11 @@ def cold_diffusion_sampling(
             t = torch.tensor([steps[count]], device=device)
 
             # Reconstruction: (x0_hat).
-            if cond_img is not None:
-                x_t_combined = torch.cat((cond_img, x_t), dim=2)
-            else:
-                x_t_combined = 1 * x_t
-            
-            x0_recon_approx = diffusion_net(
-                x_t_combined,
-                t,
-                labels_tensor)
+            x0_recon_approx_ = diffusion_net(
+                x=x_t,
+                t=t,
+                cond=labels_tensor,
+                lr_img=lr_img)
 
             if count < len(steps) - 1:
                 # t-1: Time Step
@@ -214,79 +207,5 @@ def cold_diffusion_sampling(
                     suffix='Complete',
                     length=50,
                     log=log)
-    return x0_recon_approx
 
-def frame_interpolation_sampling(
-        diffusion_net,
-        noise_degradation,
-        noise,
-        first_frame,
-        last_frame,
-        min_noise=1,
-        max_noise=1_000,
-        labels_tensor=None,
-        skip_step_size=10,
-        device="cpu",
-        log=print):
-    diffusion_net.eval()
-
-    steps = list(range(max_noise, min_noise - 1, -skip_step_size))
-
-    # Includes minimum timestep into the steps if not included.
-    if not min_noise in steps:
-        steps = steps + [min_noise]
-
-    first_frame = first_frame.to(device)
-    last_frame = last_frame.to(device)
-    noise = noise.to(device)
-
-    x_t_frames = 1 * noise
-
-    with torch.no_grad():
-        for count in range(len(steps)):
-            # t: Time Step
-            t = torch.tensor([steps[count]], device=device)
-
-            # Reconstruction: (x0_hat).
-            x_t_combined = torch.cat((first_frame, x_t_frames, last_frame), dim=2)
-            
-            x0_recon_approx = diffusion_net(
-                x_t_combined,
-                t,
-                labels_tensor)
-            
-            x0_recon_approx_ = x0_recon_approx[:, :, 1, :, :].unsqueeze(2)
-
-            if count < len(steps) - 1:
-                # t-1: Time Step
-                tm1 = torch.tensor([steps[count + 1]], device=device)
-
-                # D(x0_hat, t).
-                # Noise degraded image (x_t).
-                # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
-                x_t_frames_hat = noise_degradation(
-                    img=x0_recon_approx_,
-                    steps=t,
-                    eps=noise)
-
-                # D(x0_hat, t-1).
-                # Noise degraded image (x_t).
-                # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
-                x_tm1_frames_hat = noise_degradation(
-                    img=x0_recon_approx_,
-                    steps=tm1,
-                    eps=noise)
-                
-                # q(x_t-1 | x_t, x_0).
-                # Improved sampling from Cold Diffusion paper.
-                x_t_frames = x_t_frames - x_t_frames_hat + x_tm1_frames_hat
-
-                printProgressBar(
-                    iteration=max_noise - steps[count],
-                    total=max_noise - min_noise,
-                    prefix='Iterations:',
-                    suffix='Complete',
-                    length=50,
-                    log=log)
-
-    return x0_recon_approx
+    return x0_recon_approx_

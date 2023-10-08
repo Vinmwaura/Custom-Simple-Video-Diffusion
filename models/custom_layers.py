@@ -21,6 +21,46 @@ class Swish(nn.Module):
 
 
 """
+Adaptive Instance Normalization: (AdaIN).
+"""
+class AdaIN(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+
+        self.y_scale = nn.Conv3d(
+            in_channels,
+            out_channels,
+            kernel_size=(1, 3, 3),
+            padding=(0, 1, 1))
+        self.y_shift = nn.Conv3d(
+            in_channels,
+            out_channels,
+            kernel_size=(1, 3, 3),
+            padding=(0, 1, 1))
+
+    def forward(self, x, style):
+        _, _, D, H, W = x.shape
+
+        y_scale = self.y_scale(style)
+        y_scale = F.interpolate(
+            y_scale,
+            size=(D, H, W),
+            mode="area")
+
+        y_shift = self.y_shift(style)
+        y_shift = F.interpolate(
+            y_shift,
+            size=(D, H, W),
+            mode="area")
+
+        x_mean = torch.mean(x, dim=1, keepdim=True)
+        x_std = torch.std(x, dim=1, keepdim=True)
+        
+        x = y_scale * ((x - x_mean) / x_std) + y_shift
+        return x
+
+
+"""
 Adaptive Group Normalization: (AdaGN).
 """
 class AdaGN(nn.Module):
@@ -43,59 +83,6 @@ class AdaGN(nn.Module):
 
         x = y_scale * x_gn + y_shift
         return x
-
-
-"""
-Time Embedding (Positional Sinusodial) + Conditional Info e.g one-hot encoding.
-"""
-class ConditionalEmbedding(nn.Module):
-    def __init__(self, time_dim, cond_dim=None):
-        super().__init__()
-
-        # Number of dimensions in the embedding.
-        self.time_dim = time_dim
-        self.cond_dim = cond_dim
-
-        self.time_layer = nn.Sequential(
-            nn.Linear(self.time_dim, self.time_dim),
-            Swish(),
-            nn.Linear(self.time_dim, self.time_dim),
-            Swish(),
-            nn.Linear(self.time_dim, self.time_dim),
-            Swish(),
-            nn.Linear(self.time_dim, self.time_dim),
-        )
-
-        if self.cond_dim is not None:
-            self.cond_layer = nn.Sequential(
-                nn.Linear(self.cond_dim, self.time_dim),
-                Swish(),
-                nn.Linear(self.time_dim, self.time_dim),
-                Swish(),
-                nn.Linear(self.time_dim, self.time_dim),
-                Swish(),
-                nn.Linear(self.time_dim, self.time_dim)
-            )
-        else:
-            self.cond_layer = None
-
-    def forward(self, t, cond=None):
-        # Sinusoidal Position embeddings.
-        half_dim = self.time_dim // 2
-        time_emb = math.log(10_000) / (half_dim - 1)
-        time_emb = torch.exp(
-            torch.arange(half_dim, dtype=torch.float32, device=t.device) * -time_emb
-        )
-        time_emb = t[:, None] * time_emb[None, :]
-        time_emb = torch.cat((time_emb.sin(), time_emb.cos()), dim=1)
-        
-        time_emb = self.time_layer(time_emb)
-        
-        cond_emb = 0
-        if self.cond_layer is not None:
-            cond_emb = self.cond_layer(cond)
-        emb = time_emb + cond_emb
-        return emb
 
 
 """
@@ -183,8 +170,9 @@ class UpsampleBlock(nn.Module):
                 padding=(0, 1, 1)),
             Swish(),)
 
-    def forward(self, x, emb=None):
+    def forward(self, x, emb=None, lr_img=None):
         _ = emb
+        _ = lr_img
         x = self.conv_layer(x)
         return x
 
@@ -205,10 +193,113 @@ class DownsampleBlock(nn.Module):
                 padding=(0, 1, 1)),
             Swish())
 
-    def forward(self, x, emb=None):
+    def forward(self, x, emb=None, lr_img=None):
         _ = emb
+        _ = lr_img
         x = self.conv_layer(x)
         return x
+
+
+"""
+Mapping Layer, similar to that from StyleGAN implementation.
+Instead of passing Noise like with StyleGAN, pass low resolution image.
+Not based on any paper, custom implementation.
+"""
+class MappingLayer(nn.Module):
+    def __init__(
+            self,
+            in_channels,
+            hidden_channels=512):
+        super().__init__()
+
+        self.map_layer = nn.Sequential(
+            nn.Conv3d(
+                in_channels,
+                hidden_channels,
+                kernel_size=(1, 3, 3),
+                padding=(0, 1, 1)),
+            Swish(),
+            nn.Conv3d(
+                hidden_channels,
+                hidden_channels,
+                kernel_size=(1, 3, 3),
+                padding=(0, 1, 1)),
+            Swish(),
+            nn.Conv3d(
+                hidden_channels,
+                hidden_channels,
+                kernel_size=(1, 3, 3),
+                padding=(0, 1, 1)),
+            Swish(),
+            nn.Conv3d(
+                hidden_channels,
+                hidden_channels,
+                kernel_size=(1, 3, 3),
+                padding=(0, 1, 1)),
+            Swish(),
+            nn.Conv3d(
+                hidden_channels,
+                hidden_channels,
+                kernel_size=(1, 3, 3),
+                padding=(0, 1, 1))
+        )
+    
+    def forward(self, x):
+        x_map = self.map_layer(x)
+        return x_map
+
+
+"""
+Time Embedding (Positional Sinusodial) + Conditional Info e.g one-hot encoding.
+"""
+class ConditionalEmbedding(nn.Module):
+    def __init__(self, time_dim, cond_dim=None):
+        super().__init__()
+
+        # Number of dimensions in the embedding.
+        self.time_dim = time_dim
+        self.cond_dim = cond_dim
+
+        self.time_layer = nn.Sequential(
+            nn.Linear(self.time_dim, self.time_dim),
+            Swish(),
+            nn.Linear(self.time_dim, self.time_dim),
+            Swish(),
+            nn.Linear(self.time_dim, self.time_dim),
+            Swish(),
+            nn.Linear(self.time_dim, self.time_dim)
+        )
+
+        if self.cond_dim is not None:
+            self.cond_layer = nn.Sequential(
+                nn.Linear(self.cond_dim, self.time_dim),
+                Swish(),
+                nn.Linear(self.time_dim, self.time_dim),
+                Swish(),
+                nn.Linear(self.time_dim, self.time_dim),
+                Swish(),
+                nn.Linear(self.time_dim, self.time_dim)
+            )
+        else:
+            self.cond_layer = None
+
+    def forward(self, t, cond=None):
+        # Sinusoidal Position embeddings.
+        half_dim = self.time_dim // 2
+        time_emb = math.log(10_000) / (half_dim - 1)
+        time_emb = torch.exp(
+            torch.arange(half_dim, dtype=torch.float32, device=t.device) * -time_emb
+        )
+        time_emb = t[:, None] * time_emb[None, :]
+        time_emb = torch.cat((time_emb.sin(), time_emb.cos()), dim=1)
+        
+        time_emb = self.time_layer(time_emb)
+        
+        cond_emb = 0
+        if self.cond_layer is not None:
+            cond_emb = self.cond_layer(cond)
+        emb = time_emb + cond_emb
+        return emb
 
 
 """
@@ -219,6 +310,7 @@ class UNet_ConvBlock(nn.Module):
             self,
             in_channels,
             out_channels,
+            mapping_channels=None,
             use_activation=True,
             emb_dim=None,
             groups=32):
@@ -235,17 +327,31 @@ class UNet_ConvBlock(nn.Module):
             conv_list.append(Swish())
         self.conv_layer = nn.Sequential(*conv_list)
 
+        # Labels + Time Embedding.
         if emb_dim is not None:
             self.adagn = AdaGN(
                 emb_dim,
                 out_channels,
                 groups=groups)
 
-    def forward(self, x, emb=None):
+        # Low Resolution Embedding, 
+        # Uses ADAIN and not concatened like with other Super-Resolution models.
+        if mapping_channels is not None:
+            self.map_adain = AdaIN(
+                in_channels=mapping_channels,
+                out_channels=out_channels)
+
+    def forward(self, x, emb=None, lr_emb=None):
         x = self.conv_layer(x)
         
+        # Time and Label Embeddings.
         if emb is not None:
             x = self.adagn(x, emb)
+
+        # Low Resolution Embeddings.
+        if lr_emb is not None:
+            x = self.map_adain(x, lr_emb)
+
         return x
 
 
@@ -257,6 +363,7 @@ class ResidualBlock(nn.Module):
             self,
             in_channels,
             out_channels,
+            mapping_channels=None,
             use_activation=True,
             emb_dim=None,
             groups=32):
@@ -265,12 +372,14 @@ class ResidualBlock(nn.Module):
         self.conv_block_1 = UNet_ConvBlock(
             in_channels=in_channels,
             out_channels=out_channels,
+            mapping_channels=mapping_channels,
             use_activation=use_activation,
             emb_dim=emb_dim,
             groups=groups)
         self.conv_block_2 = UNet_ConvBlock(
             in_channels=in_channels,
             out_channels=out_channels,
+            mapping_channels=mapping_channels,
             use_activation=use_activation,
             emb_dim=emb_dim,
             groups=groups)
@@ -283,10 +392,10 @@ class ResidualBlock(nn.Module):
         else:
             self.shortcut = nn.Identity()
 
-    def forward(self, x, emb=None):
+    def forward(self, x, emb=None, lr_emb=None):
         init_x = x
-        x = self.conv_block_1(x, emb)
-        x = self.conv_block_2(x, emb)
+        x = self.conv_block_1(x, emb, lr_emb)
+        x = self.conv_block_2(x, emb, lr_emb)
         x = x + self.shortcut(init_x)
         return x
 
@@ -300,6 +409,7 @@ class UNetBlock(nn.Module):
         in_channels,
         out_channels,
         emb_dim,
+        mapping_channels=None,
         num_resnet_blocks=1,
         use_attn=True,
         num_heads=1,
@@ -317,6 +427,7 @@ class UNetBlock(nn.Module):
                 ResidualBlock(
                     in_channels=in_channels if layer_count == 0 else hidden_channels,
                     out_channels=hidden_channels,
+                    mapping_channels=mapping_channels,
                     emb_dim=emb_dim))
             if use_attn:
                 self.attn_layers.append(
@@ -337,11 +448,11 @@ class UNetBlock(nn.Module):
                 in_channels=hidden_channels,
                 out_channels=out_channels)
 
-    def forward(self, x, emb=None):
+    def forward(self, x, emb=None, lr_img=None):
         for res_layer, attn_layer in zip(
                 self.res_layers,
                 self.attn_layers):
-            x = res_layer(x, emb)
+            x = res_layer(x, emb, lr_img)
             x = attn_layer(x)
-        x = self.out_layer(x, emb)
+        x = self.out_layer(x, emb, lr_img)
         return x

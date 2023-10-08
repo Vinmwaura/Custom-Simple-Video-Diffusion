@@ -72,9 +72,9 @@ def make_gif(videos, global_steps=None, dest_path=None, log=print):
         frame_one = all_frames[0]
         try:
             if global_steps is not None and isinstance(global_steps, int):
-                path = os.path.join(dir_path, f"video_{video_index}_{global_steps:,}.gif")
+                path = os.path.join(dir_path, f"video_{video_index + 1:,}_{global_steps:,}.gif")
             else:
-                path = os.path.join(dir_path, f"video_{video_index}.gif")
+                path = os.path.join(dir_path, f"video_{video_index + 1}.gif")
 
             frame_one.save(
                 path,
