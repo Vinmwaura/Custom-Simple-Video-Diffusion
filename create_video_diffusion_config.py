@@ -18,69 +18,30 @@ def create_video_diffusion_config():
 
     json_params = {}
 
-    # Frames Params.
-    json_params["frame_window"] = click.prompt(
-        "Total frames to be loaded?",
-        type=click.IntRange(min=1),
-        default=25)
+    # Dataset Path: file path to json file.
+    json_params["csv_path"] = click.prompt(
+        "File path to training dataset (CSV file)?",
+        type=click.Path(exists=True))
     
-    json_params["frame_skipped"] = click.prompt(
-        "Number of frames to be skipped (Modulo operator is used to select dataset frames)?",
-        type=click.IntRange(min=1),
-        default=6)
-
-    if click.confirm("Will the model include conditional input for training?"):
-        # Dataset Path: file path to json file.
-        json_params["dataset_path"] = click.prompt(
-            "File path to training dataset?",
-            type=click.Path(exists=True))
-        
-        # Model uses conditional information such as class labels in dataset.
-        json_params["use_conditional"] = True
-
-        # Dimension of conditional information such as class labels or embeddings.
+    # Dataset has labels.
+    json_params["has_labels"] = click.prompt(
+        "Does csv file contain labels?",
+        type=bool,
+        default=False)
+    
+    # Conditional Dimension.
+    json_params["cond_dim"] = None
+    if json_params["has_labels"]:
         json_params["cond_dim"] = click.prompt(
-            "Dimension of conditional input vector?",
-            type=click.IntRange(min=1),
-            default=1)
-    else:
-        # Dataset Path: Regex to images folder.
-        json_params["dataset_path"] = click.prompt(
-            "Regex to training dataset?",
-            type=str)
-
-        # Checks if dataset path is either json file path or regex to dataset images.
-        regex_files = glob.glob(json_params["dataset_path"])
-        if len(regex_files) == 0:
-            raise TypeError("Invalid Dataset Path passed!")
-        
-        json_params["use_conditional"] = False
-        json_params["cond_dim"] = None
+            "Number of labels for each frame?",
+            type=click.IntRange(min=1))
 
     # Output directory for checkpoint.
     json_params["out_dir"] = click.prompt(
-        "Destination path for output?",
+        "Destination path for model output?",
         type=click.Path())
 
-    # Training Parameters.
-    json_params["checkpoint_steps"] = click.prompt(
-        "Steps to be performed before checkpoint?",
-        type=click.IntRange(min=1),
-        default=1_000)
-    json_params["lr_steps"] = click.prompt(
-        "Steps before halving learning rate?",
-        type=click.IntRange(min=1),
-        default=100_000)
-    json_params["max_epoch"] = click.prompt(
-        "Total epoch for training?",
-        type=click.IntRange(min=1),
-        default=1_000)
-    json_params["plot_img_count"] = click.prompt(
-        "Number of videos to be generated?",
-        type=click.IntRange(min=1),
-        default=1)
-
-    # Load checkpoints.
+    # Load Model checkpoints.
     if click.confirm('Do you want to load a previous model checkpoint?'):
         json_params["model_checkpoint"] = click.prompt(
             "Model checkpoint?",
@@ -99,6 +60,44 @@ def create_video_diffusion_config():
             type=click.Path(exists=True))
     else:
         json_params["config_checkpoint"] = None
+    
+    # Super Resolution Training.
+    json_params["super_resolution_training"] = False
+    if click.confirm('Training SUper Resolution Model (For upsampling)?'):
+        json_params["super_resolution_training"] = True
+        json_params["low_res_dim"] = click.prompt(
+            "Dimensiong for downsampling training image (Low Resolution Dim)?",
+            type=click.IntRange(min=2))
+
+    # Frames Window Params.
+    json_params["frame_window"] = click.prompt(
+        "Total frames to be loaded?",
+        type=click.IntRange(min=1),
+        default=25)
+    
+    # Frames Skipped Params.
+    json_params["frame_skipped"] = click.prompt(
+        "Number of frames to be skipped (Modulo operator is used to select dataset frames)?",
+        type=click.IntRange(min=0),
+        default=6)
+
+    # Training Parameters.
+    json_params["checkpoint_steps"] = click.prompt(
+        "Steps to be performed before checkpoint?",
+        type=click.IntRange(min=1),
+        default=1_000)
+    json_params["lr_steps"] = click.prompt(
+        "Steps before halving learning rate?",
+        type=click.IntRange(min=1),
+        default=100_000)
+    json_params["max_epoch"] = click.prompt(
+        "Total epoch for training?",
+        type=click.IntRange(min=1),
+        default=1_000)
+    json_params["plot_img_count"] = click.prompt(
+        "Number of videos to be generated?",
+        type=click.IntRange(min=1),
+        default=1)
 
     # Model Params.
     json_params["diffusion_lr"] = click.prompt(
@@ -169,6 +168,12 @@ def create_video_diffusion_config():
         "Model Out Channel?",
         type=click.IntRange(min=1),
         default=3)
+    json_params["mapping_channel"] = None
+    if json_params["super_resolution_training"]:
+        json_params["mapping_channel"] = click.prompt(
+            "Mapping Channel?",
+            type=click.IntRange(min=2),
+            default=128)
     json_params["num_layers"] = click.prompt(
         "Number of layers in model?",
         type=click.IntRange(min=1),
