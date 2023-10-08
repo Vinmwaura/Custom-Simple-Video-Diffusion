@@ -1,19 +1,19 @@
 # Custom-Simple-Video-Diffusion
 
-This is an attempt at implementing a Diffusion model for video generation by modifying a 2D U-Net to a 3D U-Net with additional changes to be able to support input of multiple sequential frames from a video and generate temporally coherent frames that when combined can be able to be saved as a gif or video and be played.
+This is an attempt at implementing a Diffusion model for video generation by modifying a 2D U-Net to become a 3D U-Net with additional changes that can support input of multiple sequential frames from a video. The aim is to allow the model to generate temporally coherent frames that when combined can become a GIF or video. There's no conditioning information such as text description or class labels passed to the model so it will only attempt to randomly recreate sequential frames from video dataset without much control. 
 
 ## How it works
 This project utilises two models for generating a GIF of K frames:
 
 1. Base model.
 
-This utilises a Diffusion model to generate X frames. We load N sequental frames from a video dataset and starting from the initial frame we skip M frames in-between to obtain X frames which is then degraded by adding noise and then predicting the noise added to it.
+This utilises a 3D Diffusion model to generate X frames. We load N sequental frames from a video dataset and starting from the initial frame we skip M frames in-between to obtain X frames which is then degraded by adding noise and then predicting the noise added to it.
 
 ![Diagram showing how base model works](./Base%20Model%20Reconstruction.jpg)
 
 2. Interpolation model.
 
-This utilises a Cold-Diffusion model which reconstructs the image including an in-between frames from the generated X frames in the Base model to increase the frames to K frames. 
+This utilises a 3D Cold-Diffusion model which reconstructs the image including an in-between frames from the generated X frames in the Base model to increase the frames to K frames. 
 
 ![Diagram showing how interpolation model works](./Base%20Model%20Interpolation.jpg)
 
@@ -76,6 +76,8 @@ python extract_video_frames.py --video-path <File path to video to extract frame
 ```
 
 ## Examples of generated videos.
+Below are generated GIFs from some trained models (not shared), they include 9 frames; 5 frames are generated from Base models and 4 interpolated frames, including source of the videos.
+
 ### DashCam Video
 Dataset Source: https://youtu.be/qyN5aLRnZ-E
 
