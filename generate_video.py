@@ -1,4 +1,5 @@
 import os
+import csv
 import json
 import pathlib
 import argparse
@@ -17,214 +18,153 @@ from diffusion_enums import *
 from diffusion_sampling import (
     ddpm_sampling,
     ddim_sampling,
-    frame_interpolation_sampling)
+    cold_diffusion_sampling)
 
 # U Net Model.
 from models.Video_U_Net import Video_U_Net
 
-def generate_base_frames(
+def create_model(model_dict):
+    # Frame Params.
+    frame_window = model_dict["frame_window"]
+    frame_skipped = model_dict["frame_skipped"]
+
+    # Model Params.
+    in_channel = model_dict["in_channel"]
+    out_channel = model_dict["out_channel"]
+    mapping_channel = None if "mapping_channel" not in \
+        model_dict else model_dict["mapping_channel"]
+    num_layers = model_dict["num_layers"]
+    num_resnet_block = model_dict["num_resnet_block"]
+    attn_layers = model_dict["attn_layers"]
+    attn_heads = model_dict["attn_heads"]
+    attn_dim_per_head = model_dict["attn_dim_per_head"]
+    time_dim = model_dict["time_dim"]
+    cond_dim = model_dict["cond_dim"]
+    min_channel = model_dict["min_channel"]
+    max_channel = model_dict["max_channel"]
+    img_recon = model_dict["img_recon"]
+
+    cond_dim_combined = None if cond_dim is None else \
+        cond_dim * (frame_window // (frame_skipped + 1))
+    
+    # Model.
+    diffusion_net = Video_U_Net(
+        in_channel=in_channel,
+        out_channel=out_channel,
+        mapping_channel=mapping_channel,
+        num_layers=num_layers,
+        num_resnet_blocks=num_resnet_block,
+        attn_layers=attn_layers,
+        num_heads=attn_heads,
+        dim_per_head=attn_dim_per_head,
+        time_dim=time_dim,
+        cond_dim=cond_dim_combined,
+        min_channel=min_channel,
+        max_channel=max_channel,
+        image_recon=img_recon)
+    
+    return diffusion_net
+
+def get_noise_degradation_algorithm(noise_scheduling, model_dict, device):
+    # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
+    if noise_scheduling == NoiseScheduler.LINEAR:
+        noise_degradation = NoiseDegradation(
+            model_dict["beta1"],
+            model_dict["betaT"],
+            model_dict["max_noise_step"],
+            device)
+    elif noise_scheduling == NoiseScheduler.COSINE:
+        noise_degradation = CosineNoiseDegradation(
+            model_dict["max_noise_step"])
+    return noise_degradation
+
+def generate_video(
         device,
-        config_dict):
-    # Image Params.
-    img_N = config_dict["img_N"]
-    img_C = config_dict["img_C"]
-    img_F = config_dict["img_F"]
-    img_H = config_dict["img_H"]
-    img_W = config_dict["img_W"]
+        noise,
+        diffusion_net,
+        diffusion_alg,
+        noise_degradation,
+        model_dict,
+        low_res_image,
+        plot_video_labels,
+        skip_step):
 
-    # Sampling Params.
-    base_beta_1 = config_dict["base_beta_1"]
-    base_beta_T = config_dict["base_beta_T"]
-    base_skip_step = config_dict["base_skip_step"]
-    base_max_noise_step = config_dict["base_max_noise_step"]
-    base_min_noise_step = config_dict["base_min_noise_step"]
-
-    if config_dict["base_diffusion_alg"] == "DDIM":
-        diffusion_alg = DiffusionAlg.DDIM
-    elif config_dict["base_diffusion_alg"] == "DDPM":
-        diffusion_alg = DiffusionAlg.DDPM
-    else:
-        raise ValueError("Invalid diffusion algorithm type.")
-
-    # Degradation Algorithm.
-    base_noise_degradation = NoiseDegradation(
-        base_beta_1,
-        base_beta_T,
-        base_max_noise_step,
-        device)
-    
-    # Base Model Params.
-    base_model_checkpoint = config_dict["base_model_checkpoint"]
-
-    base_in_channel = config_dict["base_in_channel"]
-    base_out_channel = config_dict["base_out_channel"]
-    base_num_layers = config_dict["base_num_layers"]
-    base_num_resnet_block = config_dict["base_num_resnet_block"]
-    base_attn_layers = config_dict["base_attn_layers"]
-    base_attn_heads = config_dict["base_attn_heads"]
-    base_attn_dim_per_head = config_dict["base_attn_dim_per_head"]
-    base_time_dim = config_dict["base_time_dim"]
-    base_cond_dim = config_dict["base_cond_dim"]
-    base_min_channel = config_dict["base_min_channel"]
-    base_max_channel = config_dict["base_max_channel"]
-    base_img_recon = config_dict["base_img_recon"]
-    
-    # Base Model.
-    base_diffusion_net = Video_U_Net(
-        in_channel=base_in_channel,
-        out_channel=base_out_channel,
-        num_layers=base_num_layers,
-        num_resnet_blocks=base_num_resnet_block,
-        attn_layers=base_attn_layers,
-        num_heads=base_attn_heads,
-        dim_per_head=base_attn_dim_per_head,
-        time_dim=base_time_dim,
-        cond_dim=base_cond_dim,
-        min_channel=base_min_channel,
-        max_channel=base_max_channel,
-        image_recon=base_img_recon)
-    
-    base_diffusion_status, base_diffusion_dict= load_checkpoint(base_model_checkpoint)
-    if not base_diffusion_status:
-        raise Exception("An error occured while loading base model checkpoint!")
-    base_diffusion_net.custom_load_state_dict(base_diffusion_dict["model"])
-    base_diffusion_net = base_diffusion_net.to(device)
-    
-    # Generate Base Frames.
-    noise = torch.randn((img_N, img_C, img_F, img_H, img_W), device=device)
-    x_t_frames = 1 * noise
-
+    x_t_frames_plot = 1 * noise
     if diffusion_alg == DiffusionAlg.DDPM:
-        x0_frames_approx = ddpm_sampling(
-            base_diffusion_net,
-            base_noise_degradation,
-            x_t_frames,
-            base_min_noise_step,
-            base_max_noise_step,
-            cond_img=None,
-            labels_tensor=None,
+        x0_approx = ddpm_sampling(
+            diffusion_net,
+            noise_degradation,
+            x_t_frames_plot,
+            model_dict["min_noise_step"],
+            model_dict["max_actual_noise_step"],
+            lr_img=low_res_image,
+            labels_tensor=plot_video_labels,
             device=device,
             log=print)
     elif diffusion_alg == DiffusionAlg.DDIM:
-        x0_frames_approx = ddim_sampling(
-            base_diffusion_net,
-            base_noise_degradation,
-            x_t_frames,
-            min_noise=base_min_noise_step,
-            max_noise=base_max_noise_step,
-            cond_img=None,
-            labels_tensor=None,
-            ddim_step_size=base_skip_step,
+        x0_approx = ddim_sampling(
+            diffusion_net,
+            noise_degradation,
+            x_t_frames_plot,
+            min_noise=model_dict["min_noise_step"],
+            max_noise=model_dict["max_actual_noise_step"],
+            lr_img=low_res_image,
+            labels_tensor=plot_video_labels,
+            ddim_step_size=skip_step,
             device=device,
             log=print)
-    
-    return x0_frames_approx
-
-def generate_interpolated_frames(
-        device,
-        base_video_frames,
-        config_dict):
-
-    # Sampling Params.
-    interpolation_skip_step = config_dict["interpolation_skip_step"]
-    interpolation_max_noise_step = config_dict["interpolation_max_noise_step"]
-    interpolation_min_noise_step = config_dict["interpolation_min_noise_step"]
-
-    # Degradation Algorithm.
-    interpolation_noise_degradation = CosineNoiseDegradation(interpolation_max_noise_step)
-
-    # interpolation Model Params.
-    interpolation_model_checkpoint = config_dict["interpolation_model_checkpoint"]
-
-    interpolation_in_channel = config_dict["interpolation_in_channel"]
-    interpolation_out_channel = config_dict["interpolation_out_channel"]
-    interpolation_num_layers = config_dict["interpolation_num_layers"]
-    interpolation_num_resnet_block = config_dict["interpolation_num_resnet_block"]
-    interpolation_attn_layers = config_dict["interpolation_attn_layers"]
-    interpolation_attn_heads = config_dict["interpolation_attn_heads"]
-    interpolation_attn_dim_per_head = config_dict["interpolation_attn_dim_per_head"]
-    interpolation_time_dim = config_dict["interpolation_time_dim"]
-    interpolation_cond_dim = config_dict["interpolation_cond_dim"]
-    interpolation_min_channel = config_dict["interpolation_min_channel"]
-    interpolation_max_channel = config_dict["interpolation_max_channel"]
-    interpolation_img_recon = config_dict["interpolation_img_recon"]
-    
-    # interpolation Model.
-    interpolation_diffusion_net = Video_U_Net(
-        in_channel=interpolation_in_channel,
-        out_channel=interpolation_out_channel,
-        num_layers=interpolation_num_layers,
-        num_resnet_blocks=interpolation_num_resnet_block,
-        attn_layers=interpolation_attn_layers,
-        num_heads=interpolation_attn_heads,
-        dim_per_head=interpolation_attn_dim_per_head,
-        time_dim=interpolation_time_dim,
-        cond_dim=interpolation_cond_dim,
-        min_channel=interpolation_min_channel,
-        max_channel=interpolation_max_channel,
-        image_recon=interpolation_img_recon)
-    
-    interpolation_diffusion_status, interpolation_diffusion_dict= load_checkpoint(interpolation_model_checkpoint)
-    if not interpolation_diffusion_status:
-        raise Exception("An error occured while loading interpolation model checkpoint!")
-    interpolation_diffusion_net.custom_load_state_dict(interpolation_diffusion_dict["model"])
-    interpolation_diffusion_net = interpolation_diffusion_net.to(device)
-    
-    # Generate Interpolation Frames.
-    all_frames = None
-
-    # Image Params.
-    img_N, img_C, img_F, img_H, img_W = base_video_frames.shape 
-
-    for cond_range in range(0, img_F - 1):
-        first_cond_video_frames = base_video_frames[:, :, cond_range, :, :].unsqueeze(2)
-        last_cond_video_frames = base_video_frames[:, :, cond_range + 1, :, :].unsqueeze(2)
-
-        noise = torch.randn((img_N, img_C, 1, img_H, img_W), device=device)
-
-        x0_interpolated_frames = frame_interpolation_sampling(
-            interpolation_diffusion_net,
-            interpolation_noise_degradation,
+    elif diffusion_alg == DiffusionAlg.COLD:
+        x0_approx = cold_diffusion_sampling(
+            diffusion_net,
+            noise_degradation,
+            x_t_frames_plot,
             noise,
-            first_frame=first_cond_video_frames,
-            last_frame=last_cond_video_frames,
-            min_noise=interpolation_min_noise_step,
-            max_noise=interpolation_max_noise_step,
-            labels_tensor=None,
-            skip_step_size=interpolation_skip_step,
+            min_noise=model_dict["min_noise_step"],
+            max_noise=model_dict["max_actual_noise_step"],
+            lr_img=low_res_image,
+            labels_tensor=plot_video_labels,
+            skip_step_size=10,
             device=device,
             log=print)
-        
-        if all_frames is None:
-            all_frames = x0_interpolated_frames
-        else:
-            all_frames = torch.cat((all_frames, x0_interpolated_frames), dim=2)
+    else:
+        raise ValueError("Invalid Diffusion Algorithm!")
 
-    return all_frames
+    return x0_approx
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate Videos using Diffusion Models.")
-
+        description="Generate Videos.")
+    
+    parser.add_argument(
+        "-c",
+        "--config",
+        help="File path to Model(s) config file.",
+        required=True,
+        type=pathlib.Path)
+    parser.add_argument(
+        "-l",
+        "--labels",
+        nargs="*",
+        help="Conditional Labels.",
+        type=float,
+        default=None)
+    parser.add_argument(
+        "--out-dir",
+        help="File path to save output.",
+        required=True,
+        type=pathlib.Path)
+    parser.add_argument(
+        "-n",
+        "--num-images",
+        help="Seed value.",
+        default=1,
+        type=int)
     parser.add_argument(
         "--seed",
         help="Seed value.",
         default=None,
         type=int)
-
-    parser.add_argument(
-        "--out-dir",
-        help="File path to save output.",
-        default=None,
-        type=pathlib.Path)
-
-    parser.add_argument(
-        "-c",
-        "--config-path",
-        help="File path to load json config file.",
-        required=True,
-        type=pathlib.Path)
-
     parser.add_argument(
         "--device",
         help="Which hardware device will model run on (default='cpu')?",
@@ -238,32 +178,143 @@ def main():
     seed_val = args["seed"]
     if seed_val is not None:
         torch.manual_seed(seed_val)
-    
+
     # Device to run model on.
     device = args["device"]
 
     # Output Path.
     out_dir = args["out_dir"]
 
-    # Load and Parse config JSON.
-    config_json = args["config_path"]
-    with open(config_json, 'r') as json_file:
-        json_data = json_file.read()
-    config_dict = json.loads(json_data)
+    # Loads model details from json file.
+    with open(args["config"], "r") as f:
+        models_details = json.load(f)
 
-    x0_frames_approx = generate_base_frames(
-        device,
-        config_dict)
-    x0_frames_approx = generate_interpolated_frames(
-        device,
-        x0_frames_approx,
-        config_dict)
+    noise_scheduling_dict = {
+        "LINEAR": NoiseScheduler.LINEAR,
+        "COSINE": NoiseScheduler.COSINE
+    }
+    diffusion_alg_dict = {
+        "DDIM": DiffusionAlg.DDIM,
+        "DDPM": DiffusionAlg.DDPM,
+        "COLD": DiffusionAlg.COLD
+    }
 
-    make_gif(
-        x0_frames_approx,
-        global_steps=None,
-        dest_path=out_dir,
-        log=print)
+    low_res_image = None
+
+    for model_dict in models_details["models"]:
+        # Get Noise Scheduler.
+        noise_scheduling = noise_scheduling_dict[
+            model_dict["noise_scheduler"]]
+
+        # Get Diffusion Algorithm.
+        diffusion_alg = diffusion_alg_dict[
+            model_dict["diffusion_alg"]]
+        
+        # Diffusion Params
+        min_noise_step = model_dict["min_noise_step"]  # t_1
+        max_noise_step = model_dict["max_noise_step"]  # T
+        max_actual_noise_step = model_dict["max_actual_noise_step"]  # Max timestep used in training step (For ensemble models training).
+        skip_step = model_dict["skip_step"]  # Step to be skipped when sampling.
+        if max_actual_noise_step < min_noise_step \
+            or max_noise_step < min_noise_step \
+                or skip_step > max_actual_noise_step \
+                    or skip_step < 0 \
+                        or min_noise_step < 0:
+            raise ValueError("Invalid step values entered!")
+
+        # Noise Degradation Algorithms
+        noise_degradation = get_noise_degradation_algorithm(
+            noise_scheduling,
+            model_dict,
+            device)
+        
+        # Create Diffusion Model.
+        diffusion_net = create_model(model_dict)
+
+        # Load model checkpoints.
+        diffusion_status, diffusion_dict= load_checkpoint(model_dict["model_checkpoint"])
+        if not diffusion_status:
+            raise Exception("An error occured while loading model checkpoint!")
+        diffusion_net.custom_load_state_dict(diffusion_dict["model"])
+        diffusion_net = diffusion_net.to(device)
+
+        # X_T ~ N(0, I).
+        noise = torch.randn((
+            args["num_images"],
+            model_dict["img_channel"],
+            model_dict["frame_window"],
+            model_dict["img_dim"],
+            model_dict["img_dim"]),
+        device=device)
+
+        # Label Dimensions.
+        if model_dict["cond_dim"] is not None:
+            if args["labels"] is None or len(args["labels"]) != model_dict["cond_dim"]:
+                raise ValueError("Invalid / No conditional labels passed!")
+            plot_video_labels = torch.tensor(args["labels"]).float().to(args["device"])
+            # plot_video_labels = plot_video_labels.repeat(1, 16)
+        else:
+            plot_video_labels = None
+
+        if low_res_image is None:
+            x0_approx = generate_video(
+                device,
+                noise,
+                diffusion_net,
+                diffusion_alg,
+                noise_degradation,
+                model_dict,
+                low_res_image,
+                plot_video_labels,
+                skip_step)
+
+            make_gif(
+                x0_approx,
+                global_steps=model_dict["img_dim"],
+                dest_path=out_dir,
+                log=print)
+            
+            low_res_image = x0_approx
+            low_res_image[low_res_image > 1] = 1
+            low_res_image[low_res_image < -1] = -1
+        
+        else:
+            _, _, F, _, _ = low_res_image.shape
+            batch_count = F // model_dict["frame_window"]
+
+            cond_dim = model_dict["cond_dim"]
+            cond_dim_combined = None if cond_dim is None else \
+                cond_dim * (model_dict["frame_window"] // (model_dict["frame_skipped"] + 1))
+            
+            combined_img = None
+            for i in range(0, batch_count):
+                cond_img = low_res_image[:, :, i * model_dict["frame_window"] : (i + 1) * model_dict["frame_window"], :, :]
+                cond_labels = plot_video_labels[:, i * cond_dim_combined:(i + 1) * cond_dim_combined].to(device)
+                x0_approx = generate_video(
+                    device,
+                    noise,
+                    diffusion_net,
+                    diffusion_alg,
+                    noise_degradation,
+                    model_dict,
+                    cond_img,
+                    cond_labels,
+                    skip_step)
+
+                if combined_img is None:
+                    combined_img = x0_approx
+                else:
+                    combined_img = torch.cat((combined_img, x0_approx), dim=2)
+
+            make_gif(
+                combined_img,
+                global_steps=model_dict["img_dim"],
+                dest_path=out_dir,
+                log=print)
+
+            low_res_image = combined_img
+            low_res_image[low_res_image > 1] = 1
+            low_res_image[low_res_image < -1] = -1
 
 if __name__ == "__main__":
     main()
