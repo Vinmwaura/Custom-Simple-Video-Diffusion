@@ -21,9 +21,9 @@ class Swish(nn.Module):
 
 
 """
-Adaptive Instance Normalization: (AdaIN).
+Spatially-Adaptive Normalization: (SPADE).
 """
-class AdaIN(nn.Module):
+class SPADE(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
 
@@ -87,8 +87,7 @@ class AdaGN(nn.Module):
 
 """
 Attention Block. Similar to transformer's mulit-head attention block.
-Modified to allow for SpatioTemporal input i.e sequential frames in a video. 
-(Custom implementation; Not implemented from any paper, but seems to work!)
+Modified to allow for SpatioTemporal input i.e sequential frames in a video.
 """
 class AttentionBlock(nn.Module):
     def __init__(self, channels, heads=1, d_k=None, groups=32):
@@ -202,8 +201,7 @@ class DownsampleBlock(nn.Module):
 
 """
 Mapping Layer, similar to that from StyleGAN implementation.
-Instead of passing Noise like with StyleGAN, pass low resolution image.
-Not based on any paper, custom implementation.
+Instead of passing Noise like with StyleGAN, pass low resolution image or mask.
 """
 class MappingLayer(nn.Module):
     def __init__(
@@ -335,9 +333,9 @@ class UNet_ConvBlock(nn.Module):
                 groups=groups)
 
         # Low Resolution Embedding, 
-        # Uses ADAIN and not concatened like with other Super-Resolution models.
+        # Uses SPADE and not concatened like with other Super-Resolution models.
         if mapping_channels is not None:
-            self.map_adain = AdaIN(
+            self.map_SPADE = SPADE(
                 in_channels=mapping_channels,
                 out_channels=out_channels)
 
@@ -350,7 +348,7 @@ class UNet_ConvBlock(nn.Module):
 
         # Low Resolution Embeddings.
         if lr_emb is not None:
-            x = self.map_adain(x, lr_emb)
+            x = self.map_SPADE(x, lr_emb)
 
         return x
 
