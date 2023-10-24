@@ -157,18 +157,18 @@ class Video_U_Net(nn.Module):
                 param = param.data
             own_state[name].copy_(param)
 
-    def forward(self, x, t=None, cond=None, lr_img=None):
+    def forward(self, x, t=None, cond_labels=None, cond_image=None):
         prev_out = []
 
         # For Super-Resolution models, idea from StyleGAN's Mapping Layer.
         x_map = None
-        if lr_img is not None:
-            x_map = self.mapping_layers(lr_img)
+        if cond_image is not None:
+            x_map = self.mapping_layers(cond_image)
 
         # Time + Cond Embedding.
         cond_emb = None
         if self.cond_emb is not None:
-            cond_emb = self.cond_emb(t, cond)
+            cond_emb = self.cond_emb(t, cond_labels)
         
         # Down Section.
         x = self.in_layer(x)

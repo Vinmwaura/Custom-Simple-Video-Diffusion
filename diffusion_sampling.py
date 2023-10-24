@@ -8,15 +8,12 @@ def ddpm_sampling(
         x_t,
         min_noise=1,
         max_noise=1_000,
-        lr_img=None,
-        labels_tensor=None,
+        cond_image=None,
+        cond_labels=None,
         device="cpu",
         log=print):
 
     diffusion_net.eval()
-
-    if lr_img is not None:
-        lr_img = lr_img.to(device)
 
     with torch.no_grad():
         for noise_step in range(max_noise, min_noise - 1, -1):
@@ -30,8 +27,8 @@ def ddpm_sampling(
             noise_approx = diffusion_net(
                 x=x_t,
                 t=t,
-                cond=labels_tensor,
-                lr_img=lr_img)
+                cond_labels=cond_labels,
+                cond_image=cond_image)
 
             img_shape = x_t.shape
 
@@ -66,8 +63,8 @@ def ddim_sampling(
         x_t,
         min_noise=1,
         max_noise=1_000,
-        lr_img=None,
-        labels_tensor=None,
+        cond_image=None,
+        cond_labels=None,
         ddim_step_size=10,
         device="cpu",
         log=print):
@@ -83,9 +80,6 @@ def ddim_sampling(
     # 1 - DDPM
     eta = 0.0
     with torch.no_grad():
-        if lr_img is not None:
-            lr_img = lr_img.to(device)
-
         for count in range(len(steps)):
             # t: Time Step
             t = torch.tensor([steps[count]], device=device)
@@ -94,8 +88,8 @@ def ddim_sampling(
             noise_approx = diffusion_net(
                 x=x_t,
                 t=t,
-                cond=labels_tensor,
-                lr_img=lr_img)
+                cond_labels=cond_labels,
+                cond_image=cond_image)
 
             # Variables needed in computing x_t.
             _, _, alpha_bar_t = noise_degradation.get_timestep_params(t)
@@ -148,15 +142,12 @@ def cold_diffusion_sampling(
         noise,
         min_noise=1,
         max_noise=1_000,
-        lr_img=None,
-        labels_tensor=None,
+        cond_image=None,
+        cond_labels=None,
         skip_step_size=10,
         device="cpu",
         log=print):
     diffusion_net.eval()
-
-    if lr_img is not None:
-        lr_img = lr_img.to(device)
 
     steps = list(range(max_noise, min_noise - 1, -skip_step_size))
 
@@ -173,8 +164,8 @@ def cold_diffusion_sampling(
             x0_recon_approx_ = diffusion_net(
                 x=x_t,
                 t=t,
-                cond=labels_tensor,
-                lr_img=lr_img)
+                cond_labels=cond_labels,
+                cond_image=cond_image)
 
             if count < len(steps) - 1:
                 # t-1: Time Step

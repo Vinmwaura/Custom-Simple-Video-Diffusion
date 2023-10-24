@@ -19,19 +19,24 @@ def create_video_diffusion_config():
     json_params = {}
 
     # Dataset Path: file path to json file.
-    json_params["csv_path"] = click.prompt(
-        "File path to training dataset (CSV file)?",
+    json_params["json_path"] = click.prompt(
+        "File path to training dataset (JSON file)?",
         type=click.Path(exists=True))
     
-    # Dataset has labels.
-    json_params["has_labels"] = click.prompt(
-        "Does csv file contain labels?",
+    # Conditional Labels.
+    json_params["load_labels"] = click.prompt(
+        "Does dataset contain labels?",
+        default=False)
+    
+    # Conditional Image.
+    json_params["load_cond_images"] = click.prompt(
+        "Does dataset contain conditional images e.g Semantic Masks?",
         type=bool,
         default=False)
     
     # Conditional Dimension.
     json_params["cond_dim"] = None
-    if json_params["has_labels"]:
+    if json_params["load_labels"]:
         json_params["cond_dim"] = click.prompt(
             "Number of labels for each frame?",
             type=click.IntRange(min=1))
@@ -60,14 +65,6 @@ def create_video_diffusion_config():
             type=click.Path(exists=True))
     else:
         json_params["config_checkpoint"] = None
-    
-    # Super Resolution Training.
-    json_params["super_resolution_training"] = False
-    if click.confirm('Training SUper Resolution Model (For upsampling)?'):
-        json_params["super_resolution_training"] = True
-        json_params["low_res_dim"] = click.prompt(
-            "Dimensiong for downsampling training image (Low Resolution Dim)?",
-            type=click.IntRange(min=2))
 
     # Frames Window Params.
     json_params["frame_window"] = click.prompt(
@@ -117,20 +114,20 @@ def create_video_diffusion_config():
 
     if json_params["noise_scheduler"] == "LINEAR":
         # Forward process variances used in linear noise scheduling.
-        json_params["beta1"] = click.prompt(
+        json_params["beta_1"] = click.prompt(
             "Beta1 for Linear Noise scheduling?",
             type=click.FloatRange(min=0, min_open=True),
             default=5e-3)
         
         # Forward process variances used in linear noise scheduling.
-        json_params["betaT"] = click.prompt(
+        json_params["beta_T"] = click.prompt(
             "BetaT for Linear Noise scheduling?",
             type=click.FloatRange(min=0, min_open=True),
             default=9e-3)
     else:
         # Default Params just in case changes are made manually.
-        json_params["beta1"] = 5e-3
-        json_params["betaT"] = 9e-3
+        json_params["beta_1"] = 5e-3
+        json_params["beta_T"] = 9e-3
     
     json_params["diffusion_alg"] = click.prompt(
         "Diffusion algorithm to use?",
@@ -168,12 +165,14 @@ def create_video_diffusion_config():
         "Model Out Channel?",
         type=click.IntRange(min=1),
         default=3)
+
     json_params["mapping_channel"] = None
-    if json_params["super_resolution_training"]:
+    if json_params["load_cond_images"]:
         json_params["mapping_channel"] = click.prompt(
             "Mapping Channel?",
             type=click.IntRange(min=2),
             default=128)
+
     json_params["num_layers"] = click.prompt(
         "Number of layers in model?",
         type=click.IntRange(min=1),

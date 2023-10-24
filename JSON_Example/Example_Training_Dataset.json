@@ -1,0 +1,30 @@
+{
+    "data": [
+        {
+            "image_path": "<Training Image Path 1>",
+            "cond_image_path": "<Conditional Image Path 1",
+            "labels": [
+                <Int/Float Label_1 Val>,
+                <Int/Float Label_2 Val>,
+                <Int/Float Label_3 Val>,
+                <Int/Float Label_4 Val>
+            ]
+        },
+        {
+            "image_path": "<Training Image Path 2>",
+            "cond_image_path": "<Conditional Image Path 2",
+            "labels": [
+                <Int/Float Label_1 Val>,
+                <Int/Float Label_2 Val>,
+                <Int/Float Label_3 Val>,
+                <Int/Float Label_4 Val>
+            ]
+        }
+    ],
+    "label_names": [
+        "Label_1 name",
+        "Label_2 name",
+        "Label_3 name",
+        "Label_4 name"
+    ]
+}
