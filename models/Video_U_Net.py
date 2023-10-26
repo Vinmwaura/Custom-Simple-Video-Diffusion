@@ -160,7 +160,7 @@ class Video_U_Net(nn.Module):
     def forward(self, x, t=None, cond_labels=None, cond_image=None):
         prev_out = []
 
-        # For Super-Resolution models, idea from StyleGAN's Mapping Layer.
+        # For Low Resolution images (Upsampling) and Semantic Masks.
         x_map = None
         if cond_image is not None:
             x_map = self.mapping_layers(cond_image)

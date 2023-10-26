@@ -74,14 +74,33 @@ class AdaGN(nn.Module):
 
     def forward(self, x, emb):
         x_gn = self.group_norm(x)
-        
-        y_scale = self.y_scale(emb)
-        y_scale = y_scale[:, :, None, None, None]
 
-        y_shift = self.y_scale(emb)
-        y_shift = y_shift[:, :, None, None, None]
+        combined_y_scale = None
+        combined_y_shift = None
+        emb_permuted = emb.permute(1, 0, 2)
 
-        x = y_scale * x_gn + y_shift
+        for emb_each in emb_permuted:
+            y_scale = self.y_scale(emb_each)
+            y_scale = y_scale[:, :, None, None, None]
+            if combined_y_scale is None:
+                combined_y_scale = y_scale
+            else:
+                combined_y_scale = torch.cat(
+                    (combined_y_scale, y_scale),
+                    dim=2
+                )
+
+            y_shift = self.y_scale(emb_each)
+            y_shift = y_shift[:, :, None, None, None]
+
+            if combined_y_shift is None:
+                combined_y_shift = y_shift
+            else:
+                combined_y_shift = torch.cat(
+                    (combined_y_shift, y_shift),
+                    dim=2
+                )
+        x = combined_y_scale * x_gn + combined_y_shift
         return x
 
 
@@ -251,13 +270,19 @@ class MappingLayer(nn.Module):
 Time Embedding (Positional Sinusodial) + Conditional Info e.g one-hot encoding.
 """
 class ConditionalEmbedding(nn.Module):
-    def __init__(self, time_dim, cond_dim=None):
+    def __init__(self, time_dim, label_dim=None):
         super().__init__()
 
         # Number of dimensions in the embedding.
         self.time_dim = time_dim
-        self.cond_dim = cond_dim
+        self.label_dim = label_dim
 
+        self.frame_layer = nn.Sequential(
+            nn.Linear(self.time_dim, self.time_dim),
+            Swish(),
+            nn.Linear(self.time_dim, self.time_dim),
+        )
+        
         self.time_layer = nn.Sequential(
             nn.Linear(self.time_dim, self.time_dim),
             Swish(),
@@ -268,9 +293,9 @@ class ConditionalEmbedding(nn.Module):
             nn.Linear(self.time_dim, self.time_dim)
         )
 
-        if self.cond_dim is not None:
-            self.cond_layer = nn.Sequential(
-                nn.Linear(self.cond_dim, self.time_dim),
+        if self.label_dim is not None:
+            self.label_layer = nn.Sequential(
+                nn.Linear(self.label_dim, self.time_dim),
                 Swish(),
                 nn.Linear(self.time_dim, self.time_dim),
                 Swish(),
@@ -279,25 +304,47 @@ class ConditionalEmbedding(nn.Module):
                 nn.Linear(self.time_dim, self.time_dim)
             )
         else:
-            self.cond_layer = None
+            self.label_layer = None
 
-    def forward(self, t, cond=None):
+    def forward(self, t, labels=None):
         # Sinusoidal Position embeddings.
         half_dim = self.time_dim // 2
-        time_emb = math.log(10_000) / (half_dim - 1)
-        time_emb = torch.exp(
-            torch.arange(half_dim, dtype=torch.float32, device=t.device) * -time_emb
+        constant = math.log(10_000) / (half_dim - 1)
+
+        arange_emb = torch.exp(
+            torch.arange(half_dim, dtype=torch.float32, device=t.device) * -constant
         )
-        time_emb = t[:, None] * time_emb[None, :]
+
+        time_emb = t[:, None] * arange_emb[None, :]
         time_emb = torch.cat((time_emb.sin(), time_emb.cos()), dim=1)
         
         time_emb = self.time_layer(time_emb)
+        time_emb = time_emb.unsqueeze(1)
         
-        cond_emb = 0
-        if self.cond_layer is not None:
-            cond_emb = self.cond_layer(cond)
-        emb = time_emb + cond_emb
-        return emb
+        label_emb = None
+        if self.label_layer is not None and labels is not None:
+            labels = labels.permute(1, 0, 2)
+            for frame_index, label in enumerate(labels):
+                frame_count = torch.tensor([frame_index + 1], device=labels.device)
+
+                frame_emb = frame_count[:, None] * arange_emb[None, :]
+                frame_emb = torch.cat((frame_emb.sin(), frame_emb.cos()), dim=1)
+                
+                frame_emb = self.frame_layer(frame_emb)
+
+                label_out = self.label_layer(label)
+                label_out = label_out + frame_emb
+                
+                if label_emb is None:
+                    label_emb = label_out.unsqueeze(1)
+                else:
+                    label_emb = torch.cat((label_emb, label_out.unsqueeze(1)), dim=1)
+        else:
+            label_emb = 0
+
+        aggr_emb = label_emb + time_emb
+        return aggr_emb
+
 
 
 """
@@ -339,16 +386,16 @@ class UNet_ConvBlock(nn.Module):
                 in_channels=mapping_channels,
                 out_channels=out_channels)
 
-    def forward(self, x, emb=None, lr_emb=None):
+    def forward(self, x, label_emb=None, cond_img=None):
         x = self.conv_layer(x)
         
         # Time and Label Embeddings.
-        if emb is not None:
-            x = self.adagn(x, emb)
+        if label_emb is not None:
+            x = self.adagn(x, label_emb)
 
         # Low Resolution Embeddings.
-        if lr_emb is not None:
-            x = self.map_SPADE(x, lr_emb)
+        if cond_img is not None:
+            x = self.map_SPADE(x, cond_img)
 
         return x
 
@@ -390,10 +437,16 @@ class ResidualBlock(nn.Module):
         else:
             self.shortcut = nn.Identity()
 
-    def forward(self, x, emb=None, lr_emb=None):
+    def forward(self, x, label_emb=None, cond_img=None):
         init_x = x
-        x = self.conv_block_1(x, emb, lr_emb)
-        x = self.conv_block_2(x, emb, lr_emb)
+        x = self.conv_block_1(
+            x,
+            label_emb,
+            cond_img)
+        x = self.conv_block_2(
+            x,
+            label_emb,
+            cond_img)
         x = x + self.shortcut(init_x)
         return x
 
@@ -446,11 +499,11 @@ class UNetBlock(nn.Module):
                 in_channels=hidden_channels,
                 out_channels=out_channels)
 
-    def forward(self, x, emb=None, lr_img=None):
+    def forward(self, x, label_emb=None, cond_image=None):
         for res_layer, attn_layer in zip(
                 self.res_layers,
                 self.attn_layers):
-            x = res_layer(x, emb, lr_img)
+            x = res_layer(x, label_emb, cond_image)
             x = attn_layer(x)
-        x = self.out_layer(x, emb, lr_img)
+        x = self.out_layer(x, label_emb, cond_image)
         return x

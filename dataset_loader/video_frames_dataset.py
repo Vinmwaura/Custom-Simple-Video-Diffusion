@@ -49,7 +49,7 @@ class VideoFramesDataset(Dataset):
         if frames_skipped < 0 or frames_skipped >= frame_window:
             raise ValueError("Invalid frame skipped value.")
 
-        self.frames_skipped = (frames_skipped + 1)
+        self.frames_skipped = 1 if frames_skipped == 0 else frames_skipped
 
         self.frame_counts = len(self.frame_dict)
 
@@ -67,7 +67,7 @@ class VideoFramesDataset(Dataset):
 
                 # Combines all label vectors together to form a larger vector.
                 if self.load_labels and "labels" in self.frame_dict[str(frame_index)]:
-                    labels.extend(self.frame_dict[str(frame_index)]["labels"])
+                    labels.append(self.frame_dict[str(frame_index)]["labels"])
 
                 image_path = self.frame_dict[str(frame_index)]["image_path"]
 

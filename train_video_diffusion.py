@@ -28,11 +28,6 @@ from diffusion_sampling import (
 
 from dataset_loader.video_frames_dataset import VideoFramesDataset
 
-def chunks(lst, n):
-    """Yield successive n-sized chunks from lst."""
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
 def main():
     project_name = "Video-Diffusion"
 
@@ -176,9 +171,6 @@ def main():
     max_channel = config_dict["max_channel"]
     img_recon = config_dict["img_recon"]
 
-    cond_dim_combined = None if cond_dim is None else \
-        cond_dim * (frame_window // (frame_skipped + 1))
-    
     # Validate model parameters.
     if load_cond_images and mapping_channel is None:
         raise ValueError(
@@ -202,7 +194,7 @@ def main():
         num_heads=attn_heads,
         dim_per_head=attn_dim_per_head,
         time_dim=time_dim,
-        cond_dim=cond_dim_combined,
+        cond_dim=cond_dim,
         min_channel=min_channel,
         max_channel=max_channel,
         image_recon=img_recon)
@@ -244,10 +236,7 @@ def main():
             for video_idx, plot_video_label in enumerate(plot_video_labels_list):
                 all_rows.append([f"Video-{video_idx+1:,}"])
 
-                # Group labels per frames in each video.
-                plot_frames_label = list(chunks(plot_video_label, cond_dim))
-
-                for frame_idx, plot_frame_label in enumerate(plot_frames_label):
+                for frame_idx, plot_frame_label in enumerate(plot_video_label):
                     labels = [f"Frame-{frame_idx + 1:,}"] + plot_frame_label
                     all_rows.append(labels)
 
@@ -368,11 +357,11 @@ def main():
             training_count += 1
 
             """
-            Loads:
-            1) Training Image only.
-            2) Training Image + Conditional Labels.
-            3) Training Image + Conditional Image.
-            4) Training Image + Conditional Labels + Conditional Image.
+            #Loads:
+            #1) Training Image only.
+            #2) Training Image + Conditional Labels.
+            #3) Training Image + Conditional Image.
+            #4) Training Image + Conditional Labels + Conditional Image.
             """
             if not load_labels and not load_cond_images:
                 video_frames = data_out.to(device)
