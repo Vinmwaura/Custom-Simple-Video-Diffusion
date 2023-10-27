@@ -132,3 +132,22 @@ To create the labels for this dataset i used timestamps of the video, game chara
 
 #### 128 * 128 GIF
 ![GIF of Tekken 3 - 128*128](./assets/GIFS/Tekken_3_128.gif)
+
+### Me in my room
+This dataset was created by recording myself moving in my room with my phone for half an hour. I then used [YOLOv8](https://docs.ultralytics.com/) to obtain pose estimation keypoints which was used in the model as labels for their respective frames.
+
+Here is an example of the keypoints for each frame used in generating the GIFS shown below.
+
+![Screenshot of frame pose keypoints examples used](./assets/Me_Walking_Room_Pose_Example.png)
+
+#### Visualization of keypoints
+![GIF of keypoints visualized in 2D space](./assets/GIFS/Keypoints_visualized.gif)
+
+#### 32 * 32 GIF
+![GIF of Me walking in a room - 32*32](./assets/GIFS/Me_Room_32.gif)
+
+#### 64 * 64 GIF
+![GIF of Me walking in a room - 64*64](./assets/GIFS/Me_Room_64.gif)
+
+#### 128 * 128 GIF
+![GIF of Me walking in a room - 128*128](./assets/GIFS/Me_Room_128.gif)
