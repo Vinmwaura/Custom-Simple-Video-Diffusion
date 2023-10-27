@@ -23,48 +23,6 @@ from diffusion_sampling import (
 # U Net Model.
 from models.Video_U_Net import Video_U_Net
 
-def create_model(model_dict):
-    # Frame Params.
-    frame_window = model_dict["frame_window"]
-    frame_skipped = model_dict["frame_skipped"]
-
-    # Model Params.
-    in_channel = model_dict["in_channel"]
-    out_channel = model_dict["out_channel"]
-    mapping_channel = None if "mapping_channel" not in \
-        model_dict else model_dict["mapping_channel"]
-    num_layers = model_dict["num_layers"]
-    num_resnet_block = model_dict["num_resnet_block"]
-    attn_layers = model_dict["attn_layers"]
-    attn_heads = model_dict["attn_heads"]
-    attn_dim_per_head = model_dict["attn_dim_per_head"]
-    time_dim = model_dict["time_dim"]
-    cond_dim = model_dict["cond_dim"]
-    min_channel = model_dict["min_channel"]
-    max_channel = model_dict["max_channel"]
-    img_recon = model_dict["img_recon"]
-
-    cond_dim_combined = None if cond_dim is None else \
-        cond_dim * (frame_window // (frame_skipped + 1))
-    
-    # Model.
-    diffusion_net = Video_U_Net(
-        in_channel=in_channel,
-        out_channel=out_channel,
-        mapping_channel=mapping_channel,
-        num_layers=num_layers,
-        num_resnet_blocks=num_resnet_block,
-        attn_layers=attn_layers,
-        num_heads=attn_heads,
-        dim_per_head=attn_dim_per_head,
-        time_dim=time_dim,
-        cond_dim=cond_dim_combined,
-        min_channel=min_channel,
-        max_channel=max_channel,
-        image_recon=img_recon)
-    
-    return diffusion_net
-
 def get_noise_degradation_algorithm(noise_scheduling, model_dict, device):
     # x_t(X_0, eps) = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps.
     if noise_scheduling == NoiseScheduler.LINEAR:
@@ -88,8 +46,9 @@ def generate_video(
         low_res_image,
         plot_video_labels,
         skip_step):
-
+    # Initial x_t ~ Noise.
     x_t_frames_plot = 1 * noise
+
     if diffusion_alg == DiffusionAlg.DDPM:
         x0_approx = ddpm_sampling(
             diffusion_net,
@@ -97,8 +56,8 @@ def generate_video(
             x_t_frames_plot,
             model_dict["min_noise_step"],
             model_dict["max_actual_noise_step"],
-            lr_img=low_res_image,
-            labels_tensor=plot_video_labels,
+            cond_image=low_res_image,
+            cond_labels=plot_video_labels,
             device=device,
             log=print)
     elif diffusion_alg == DiffusionAlg.DDIM:
@@ -108,8 +67,8 @@ def generate_video(
             x_t_frames_plot,
             min_noise=model_dict["min_noise_step"],
             max_noise=model_dict["max_actual_noise_step"],
-            lr_img=low_res_image,
-            labels_tensor=plot_video_labels,
+            cond_image=low_res_image,
+            cond_labels=plot_video_labels,
             ddim_step_size=skip_step,
             device=device,
             log=print)
@@ -121,8 +80,8 @@ def generate_video(
             noise,
             min_noise=model_dict["min_noise_step"],
             max_noise=model_dict["max_actual_noise_step"],
-            lr_img=low_res_image,
-            labels_tensor=plot_video_labels,
+            cond_image=low_res_image,
+            cond_labels=plot_video_labels,
             skip_step_size=10,
             device=device,
             log=print)
@@ -131,6 +90,39 @@ def generate_video(
 
     return x0_approx
 
+def create_model(model_dict):
+    # Model Params.
+    in_channel = model_dict["in_channel"]
+    out_channel = model_dict["out_channel"]
+    mapping_channel = model_dict["mapping_channel"]
+    num_layers = model_dict["num_layers"]
+    num_resnet_block = model_dict["num_resnet_block"]
+    attn_layers = model_dict["attn_layers"]
+    attn_heads = model_dict["attn_heads"]
+    attn_dim_per_head = model_dict["attn_dim_per_head"]
+    time_dim = model_dict["time_dim"]
+    cond_dim = model_dict["cond_dim"]
+    min_channel = model_dict["min_channel"]
+    max_channel = model_dict["max_channel"]
+    img_recon = model_dict["img_recon"]
+
+    # Model.
+    diffusion_net = Video_U_Net(
+        in_channel=in_channel,
+        out_channel=out_channel,
+        mapping_channel=mapping_channel,
+        num_layers=num_layers,
+        num_resnet_blocks=num_resnet_block,
+        attn_layers=attn_layers,
+        num_heads=attn_heads,
+        dim_per_head=attn_dim_per_head,
+        time_dim=time_dim,
+        cond_dim=cond_dim,
+        min_channel=min_channel,
+        max_channel=max_channel,
+        image_recon=img_recon)
+    
+    return diffusion_net
 
 def main():
     parser = argparse.ArgumentParser(
@@ -154,12 +146,6 @@ def main():
         help="File path to save output.",
         required=True,
         type=pathlib.Path)
-    parser.add_argument(
-        "-n",
-        "--num-images",
-        help="Seed value.",
-        default=1,
-        type=int)
     parser.add_argument(
         "--seed",
         help="Seed value.",
@@ -188,28 +174,18 @@ def main():
     # Loads model details from json file.
     with open(args["config"], "r") as f:
         models_details = json.load(f)
-
+    
     noise_scheduling_dict = {
         "LINEAR": NoiseScheduler.LINEAR,
-        "COSINE": NoiseScheduler.COSINE
-    }
+        "COSINE": NoiseScheduler.COSINE}
     diffusion_alg_dict = {
         "DDIM": DiffusionAlg.DDIM,
         "DDPM": DiffusionAlg.DDPM,
-        "COLD": DiffusionAlg.COLD
-    }
+        "COLD": DiffusionAlg.COLD}
 
     low_res_image = None
 
     for model_dict in models_details["models"]:
-        # Get Noise Scheduler.
-        noise_scheduling = noise_scheduling_dict[
-            model_dict["noise_scheduler"]]
-
-        # Get Diffusion Algorithm.
-        diffusion_alg = diffusion_alg_dict[
-            model_dict["diffusion_alg"]]
-        
         # Diffusion Params
         min_noise_step = model_dict["min_noise_step"]  # t_1
         max_noise_step = model_dict["max_noise_step"]  # T
@@ -222,12 +198,28 @@ def main():
                         or min_noise_step < 0:
             raise ValueError("Invalid step values entered!")
 
+        if model_dict["frame_skipped"] > 0:
+            total_frames = 0
+            for frame_count in range(model_dict["frame_window"]):
+                if frame_count % model_dict["frame_skipped"] == 0:
+                    total_frames += 1
+        else:
+            total_frames = model_dict["frame_window"]
+        
+        # Get Noise Scheduler.
+        noise_scheduling = noise_scheduling_dict[
+            model_dict["noise_scheduler"]]
+        
+        # Get Diffusion Algorithm.
+        diffusion_alg = diffusion_alg_dict[
+            model_dict["diffusion_alg"]]
+        
         # Noise Degradation Algorithms
         noise_degradation = get_noise_degradation_algorithm(
             noise_scheduling,
             model_dict,
             device)
-        
+
         # Create Diffusion Model.
         diffusion_net = create_model(model_dict)
 
@@ -240,23 +232,26 @@ def main():
 
         # X_T ~ N(0, I).
         noise = torch.randn((
-            args["num_images"],
+            1,
             model_dict["img_channel"],
-            model_dict["frame_window"],
+            total_frames,
             model_dict["img_dim"],
             model_dict["img_dim"]),
         device=device)
 
         # Label Dimensions.
         if model_dict["cond_dim"] is not None:
-            if args["labels"] is None or len(args["labels"]) != model_dict["cond_dim"]:
+            if args["labels"] is None:
                 raise ValueError("Invalid / No conditional labels passed!")
             plot_video_labels = torch.tensor(args["labels"]).float().to(args["device"])
-            # plot_video_labels = plot_video_labels.repeat(1, 16)
         else:
             plot_video_labels = None
-
+        
+        # Base Model.
         if low_res_image is None:
+            plot_video_labels = plot_video_labels.reshape(
+                (1, total_frames, model_dict["cond_dim"]))
+            
             x0_approx = generate_video(
                 device,
                 noise,
@@ -267,29 +262,34 @@ def main():
                 low_res_image,
                 plot_video_labels,
                 skip_step)
-
+            
             make_gif(
                 x0_approx,
                 global_steps=model_dict["img_dim"],
                 dest_path=out_dir,
                 log=print)
-            
-            low_res_image = x0_approx
-            low_res_image[low_res_image > 1] = 1
-            low_res_image[low_res_image < -1] = -1
-        
-        else:
-            _, _, F, _, _ = low_res_image.shape
-            batch_count = F // model_dict["frame_window"]
 
-            cond_dim = model_dict["cond_dim"]
-            cond_dim_combined = None if cond_dim is None else \
-                cond_dim * (model_dict["frame_window"] // (model_dict["frame_skipped"] + 1))
-            
+            low_res_image = x0_approx
+
+            # Clip values to be between -1 and 1 to avoid artefacts.
+            low_res_image = np.clip(low_res_image, -1, 1)
+        else:
+            # Upsampling Models.
+            _, _, F, _, _ = low_res_image.shape
+            batch_count = F // total_frames
             combined_img = None
             for i in range(0, batch_count):
-                cond_img = low_res_image[:, :, i * model_dict["frame_window"] : (i + 1) * model_dict["frame_window"], :, :]
-                cond_labels = plot_video_labels[:, i * cond_dim_combined:(i + 1) * cond_dim_combined].to(device)
+                cond_dim = model_dict["cond_dim"]
+
+                cond_img = low_res_image[
+                    :,
+                    :,
+                    i * total_frames:(i + 1) * total_frames,
+                    :,
+                    :]
+                cond_labels = plot_video_labels[i * total_frames * cond_dim:(i + 1) * total_frames * cond_dim]
+                cond_labels = cond_labels.reshape((1, total_frames, cond_dim))
+                
                 x0_approx = generate_video(
                     device,
                     noise,
@@ -312,9 +312,8 @@ def main():
                 dest_path=out_dir,
                 log=print)
 
-            low_res_image = combined_img
-            low_res_image[low_res_image > 1] = 1
-            low_res_image[low_res_image < -1] = -1
+            # Clip values to be between -1 and 1 to avoid artefacts.
+            low_res_image = np.clip(low_res_image, -1, 1)
 
 if __name__ == "__main__":
     main()

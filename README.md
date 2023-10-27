@@ -1,4 +1,4 @@
-# Custom-Simple-Video-Diffusion
+# Simple-Video-Diffusion
 
 This is an attempt at implementing a Diffusion model for video generation by modifying a 2D U-Net to become a 3D U-Net with additional changes to allow the model to generate temporally coherent frames that when combined can become a GIF or video. Simple class labels can be used to control the output of the model.
 
