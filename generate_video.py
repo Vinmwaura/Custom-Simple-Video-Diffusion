@@ -124,7 +124,9 @@ def create_model(model_dict):
     
     return diffusion_net
 
-def main():
+def generate_video_diffusion(
+        raw_args=None,
+        log=print):
     parser = argparse.ArgumentParser(
         description="Generate Videos.")
     
@@ -158,7 +160,7 @@ def main():
         type=str,
         default="cpu")
     
-    args = vars(parser.parse_args())
+    args = vars(parser.parse_args(raw_args))
 
     # Seed Value.
     seed_val = args["seed"]
@@ -272,7 +274,7 @@ def main():
             low_res_image = x0_approx
 
             # Clip values to be between -1 and 1 to avoid artefacts.
-            low_res_image = np.clip(low_res_image, -1, 1)
+            low_res_image = torch.clip(low_res_image, -1, 1)
         else:
             # Upsampling Models.
             _, _, F, _, _ = low_res_image.shape
@@ -313,7 +315,7 @@ def main():
                 log=print)
 
             # Clip values to be between -1 and 1 to avoid artefacts.
-            low_res_image = np.clip(low_res_image, -1, 1)
+            low_res_image = torch.clip(low_res_image, -1, 1)
 
 if __name__ == "__main__":
-    main()
+    generate_video_diffusion()
