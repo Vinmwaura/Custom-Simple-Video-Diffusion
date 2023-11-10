@@ -151,3 +151,19 @@ Here is an example of the keypoints for each frame used in generating the GIFS s
 
 #### 128 * 128 GIF
 ![GIF of Me walking in a room - 128*128](./assets/GIFS/Me_Room_128.gif)
+
+To be able to generate GIFS similar to the ones above:
+1. Download the models and config files [here](https://huggingface.co/VinML/Room-Walking-Model).
+2. Extract the **models.tar.xz** folder.
+3. Update **config.json** file to have correct path for the extracted models folders.
+4. Run the following to visualize some saved pose keypoints:
+```
+python pose_keypoints_visualization_script.py --keypoints "<path to folder>/pose_keypoints.json" --config "<path to folder>/config.json" --out-dir "<output directory for model generation>" --device "<device model will run on: cpu/cuda>"
+```
+This will open a simple window displaying multiple frames of the pose keypoints that will be used as labels in the models.
++ To switch between keypoints, press "**r**" with the window in focus.
++ To generate videos using pose keypoints displayed, press "**g**" with the window in focus.
++ To exit without generating any video, press "**Esc**" with the window in focus.
+
+**NOTE**:
+This is not an interactive interface and has no proper GUI, ideally it should be more like an animation tool like blender or other text-to-video models which use text-prompts. This would give any user more control of how the video/GIF would turn out. Currently i have just saved all the estimated pose keypoints from the video recored and the script is randomly selecting sequential frames with skipped frames to be used as labels by the models to generate frames with.
